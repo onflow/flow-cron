@@ -281,13 +281,8 @@ access(all) contract FlowCron {
         callbackId: UInt64
     ): @FlowToken.Vault {
         // First verify this is actually a cron job managed by FlowCron
-        if let callbackData = FlowCallbackScheduler.getCallbackData(id: callbackId) {
-            // Check if the callback handler is our CronManager
-            if !callbackData.handlerTypeIdentifier.contains("FlowCron.CronManager") {
-                panic("Cannot cancel callback: ID \(callbackId) is not a FlowCron-managed cron job")
-            }
-        } else {
-            panic("Cannot cancel callback: ID \(callbackId) not found")
+        if !self.isCronJob(callbackId: callbackId) {
+            panic("Cannot cancel callback: ID \(callbackId) is not a FlowCron-managed cron job")
         }
         
         let manager = callbackManager.borrow()
@@ -312,11 +307,8 @@ access(all) contract FlowCron {
         
         // Filter for callbacks that are managed by our CronManager
         for callbackId in allCallbacks {
-            if let callbackData = FlowCallbackScheduler.getCallbackData(id: callbackId) {
-                // Check if the callback handler is our CronManager
-                if callbackData.handlerTypeIdentifier.contains("FlowCron.CronManager") {
-                    cronJobIDs.append(callbackId)
-                }
+            if self.isCronJob(callbackId: callbackId) {
+                cronJobIDs.append(callbackId)
             }
         }
         
@@ -329,7 +321,7 @@ access(all) contract FlowCron {
     access(all) fun getCronJobDisplayData(callbackId: UInt64): CronJobDisplayData? {
         if let callbackData = FlowCallbackScheduler.getCallbackData(id: callbackId) {
             // Verify this is a FlowCron managed callback
-            if !callbackData.handlerTypeIdentifier.contains("FlowCron.CronManager") {
+            if !self.isCronJob(callbackId: callbackId) {
                 return nil
             }
             
@@ -369,11 +361,16 @@ access(all) contract FlowCron {
     /// Get cron job status using the user's CallbackManager
     /// @param callbackManager: User's CallbackManager
     /// @param callbackId: The callback ID of the cron job
-    /// @return: Status of the callback, or nil if not found
+    /// @return: Status of the callback, or nil if not found or not a cron job
     access(all) fun getCronJobStatus(
         callbackManager: Capability<&FlowCallbackUtils.CallbackManager>,
         callbackId: UInt64
     ): FlowCallbackScheduler.Status? {
+        // First verify this is actually a cron job managed by FlowCron
+        if !self.isCronJob(callbackId: callbackId) {
+            return nil // Not a cron job or not found
+        }
+        
         let manager = callbackManager.borrow()
             ?? panic("Cannot borrow callback manager capability")
         return manager.getCallbackStatus(id: callbackId)
@@ -519,6 +516,16 @@ access(all) contract FlowCron {
         }
     }
 
+
+    /// Internal helper to verify if a callback ID belongs to a FlowCron-managed cron job
+    /// @param callbackId: The callback ID to check
+    /// @return: True if it's a FlowCron cron job, false otherwise
+    access(self) fun isCronJob(callbackId: UInt64): Bool {
+        if let callbackData = FlowCallbackScheduler.getCallbackData(id: callbackId) {
+            return callbackData.handlerAddress == FlowCron.account.address
+        }
+        return false
+    }
 
     /// Contract initialization - creates centralized CronManager and publishes capability
     init() {
