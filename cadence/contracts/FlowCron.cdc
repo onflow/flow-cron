@@ -11,6 +11,13 @@ import "FungibleToken"
 /// Built on FlowTransactionScheduler and FlowTransactionSchedulerUtils for seamless integration.
 access(all) contract FlowCron {
     
+    /// Singleton instance used to store the shared CronManager capability
+    /// and route all cron job functionality
+    access(self) var sharedCronManager: Capability<auth(FlowTransactionScheduler.Execute) &{FlowTransactionScheduler.TransactionHandler}>
+    
+    /// Storage path for the singleton CronManager resource
+    access(all) let storagePath: StoragePath
+    
     /// Emitted when a new cron job is created
     access(all) event CronJobCreated(
         handlerAddress: Address,
@@ -370,14 +377,9 @@ access(all) contract FlowCron {
             ?? panic("Cannot borrow fee provider capability")
         let fees <- feeVault.withdraw(amount: estimate.flowFee!)
         
-        // Get FlowCron's manager capability
-        let cronManagerCap = FlowCron.account.capabilities.get<
-            auth(FlowTransactionScheduler.Execute) &{FlowTransactionScheduler.TransactionHandler}
-        >(/public/cronManager)
-        
-        // Schedule using Manager
+        // Schedule using Manager with shared CronManager capability
         manager.schedule(
-            handlerCap: cronManagerCap,
+            handlerCap: FlowCron.sharedCronManager,
             data: config,
             timestamp: UFix64(nextTime!),
             priority: config.priority,
@@ -398,19 +400,21 @@ access(all) contract FlowCron {
         return false
     }
 
-    /// Contract initialization - creates centralized CronManager and publishes capability
+    /// Contract initialization - creates centralized CronManager 
     init() {
+        // Initialize storage path
+        self.storagePath = /storage/flowCronManager
+        
         // Create and store the centralized CronManager
         let cronManager <- create CronManager(
             name: "FlowCron Manager",
             description: "Centralized manager for all cron jobs"
         )
-        self.account.storage.save(<-cronManager, to: /storage/cronManager)
+        self.account.storage.save(<-cronManager, to: self.storagePath)
         
-        // Publish capability to the CronManager
-        let cronManagerCap = self.account.capabilities.storage.issue<
+        // Issue and store the shared capability
+        self.sharedCronManager = self.account.capabilities.storage.issue<
             auth(FlowTransactionScheduler.Execute) &{FlowTransactionScheduler.TransactionHandler}
-        >(/storage/cronManager)
-        self.account.capabilities.publish(cronManagerCap, at: /public/cronManager)
+        >(self.storagePath)
     }
 }
