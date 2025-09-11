@@ -165,57 +165,6 @@ access(all) contract FlowCron {
         }
     }
 
-    /// Internal helper function for scheduling callbacks with common logic
-    /// Used by both initial scheduling and rescheduling to ensure consistent behavior
-    /// @param config: CronJobConfig containing all scheduling parameters
-    /// @param afterUnix: Calculate next execution time after this timestamp
-    /// @param callbackManager: CallbackManager to use for scheduling
-    /// @return: Next execution timestamp, or nil if no valid time found
-    access(self) fun internalSchedule(
-        config: CronJobConfig,
-        afterUnix: UInt64,
-        callbackManager: auth(FlowCallbackUtils.Owner) &FlowCallbackUtils.CallbackManager
-    ): UFix64? {
-        // Calculate next execution time
-        let nextTime = FlowCronParser.nextTick(spec: config.cronSpec, afterUnix: afterUnix)
-        if nextTime == nil { return nil }
-        
-        // Use FlowCallbackScheduler.estimate() to calculate exact fee needed
-        let estimate = FlowCallbackScheduler.estimate(
-            data: config,
-            timestamp: UFix64(nextTime!),
-            priority: config.priority,
-            executionEffort: config.executionEffort
-        )
-        
-        // Check if estimation failed
-        if estimate.flowFee == nil {
-            panic(estimate.error ?? "Failed to estimate callback fee")
-        }
-        
-        // Get fees for execution using calculated amount
-        let feeVault = config.feeProvider.borrow()
-            ?? panic("Cannot borrow fee provider capability")
-        let fees <- feeVault.withdraw(amount: estimate.flowFee!)
-        
-        // Get FlowCron's manager capability
-        let cronManagerCap = FlowCron.account.capabilities.get<
-            auth(FlowCallbackScheduler.Execute) &{FlowCallbackScheduler.CallbackHandler}
-        >(/public/cronManager)
-        
-        // Schedule using CallbackManager
-        callbackManager.schedule(
-            callback: cronManagerCap,
-            data: config,
-            timestamp: UFix64(nextTime!),
-            priority: config.priority,
-            executionEffort: config.executionEffort,
-            fees: <-fees as! @FlowToken.Vault
-        )
-        
-        return UFix64(nextTime!)
-    }
-
     /// Schedule a cron job using the user's CallbackManager
     /// @param handler: The callback handler to wrap with cron scheduling
     /// @param callbackManager: User's CallbackManager for managing the scheduled callback
@@ -395,127 +344,56 @@ access(all) contract FlowCron {
         return FlowCronParser.parse(expression: expression)
     }
 
-    /// Validate that a CronSpec has valid bitmask values
-    /// @param cronSpec: CronSpec to validate
-    /// @return: True if valid
-    access(all) fun validateCronSpec(cronSpec: FlowCronParser.CronSpec): Bool {
-        // Basic validation - ensure at least one bit is set in each field
-        return cronSpec.minMask > 0 &&
-               cronSpec.hourMask > 0 &&
-               cronSpec.domMask > 0 &&
-               cronSpec.monthMask > 0 &&
-               cronSpec.dowMask > 0
-    }
-
-    /// Get a human-readable description of a CronSpec (simplified)
-    /// @param cronSpec: CronSpec to describe
-    /// @return: Simple description string
-    access(all) fun describeCronSpec(cronSpec: FlowCronParser.CronSpec): String {
-        var description = "Runs"
+    /// Internal helper function for scheduling callbacks with common logic
+    /// Used by both initial scheduling and rescheduling to ensure consistent behavior
+    /// @param config: CronJobConfig containing all scheduling parameters
+    /// @param afterUnix: Calculate next execution time after this timestamp
+    /// @param callbackManager: CallbackManager to use for scheduling
+    /// @return: Next execution timestamp, or nil if no valid time found
+    access(self) fun internalSchedule(
+        config: CronJobConfig,
+        afterUnix: UInt64,
+        callbackManager: auth(FlowCallbackUtils.Owner) &FlowCallbackUtils.CallbackManager
+    ): UFix64? {
+        // Calculate next execution time
+        let nextTime = FlowCronParser.nextTick(spec: config.cronSpec, afterUnix: afterUnix)
+        if nextTime == nil { return nil }
         
-        // Simple frequency detection
-        if cronSpec.minMask == 0x1 && cronSpec.hourMask == 0xFFFFFF && 
-           cronSpec.domMask == 0xFFFFFFFE && cronSpec.monthMask == 0x1FFE && cronSpec.dowMask == 0x7F {
-            description = description.concat(" every minute")
-        } else if cronSpec.hourMask == 0x1 && cronSpec.domMask == 0xFFFFFFFE && 
-                  cronSpec.monthMask == 0x1FFE && cronSpec.dowMask == 0x7F {
-            description = description.concat(" hourly")
-        } else if cronSpec.domMask == 0x2 && cronSpec.monthMask == 0x1FFE && cronSpec.dowMask == 0x7F {
-            description = description.concat(" daily")
-        } else if cronSpec.domMask == 0x2 && cronSpec.monthMask == 0x1FFE {
-            description = description.concat(" weekly")
-        } else if cronSpec.domMask == 0x2 {
-            description = description.concat(" monthly")
-        } else {
-            description = description.concat(" on custom schedule")
+        // Use FlowCallbackScheduler.estimate() to calculate exact fee needed
+        let estimate = FlowCallbackScheduler.estimate(
+            data: config,
+            timestamp: UFix64(nextTime!),
+            priority: config.priority,
+            executionEffort: config.executionEffort
+        )
+        
+        // Check if estimation failed
+        if estimate.flowFee == nil {
+            panic(estimate.error ?? "Failed to estimate callback fee")
         }
         
-        return description
+        // Get fees for execution using calculated amount
+        let feeVault = config.feeProvider.borrow()
+            ?? panic("Cannot borrow fee provider capability")
+        let fees <- feeVault.withdraw(amount: estimate.flowFee!)
+        
+        // Get FlowCron's manager capability
+        let cronManagerCap = FlowCron.account.capabilities.get<
+            auth(FlowCallbackScheduler.Execute) &{FlowCallbackScheduler.CallbackHandler}
+        >(/public/cronManager)
+        
+        // Schedule using CallbackManager
+        callbackManager.schedule(
+            callback: cronManagerCap,
+            data: config,
+            timestamp: UFix64(nextTime!),
+            priority: config.priority,
+            executionEffort: config.executionEffort,
+            fees: <-fees as! @FlowToken.Vault
+        )
+        
+        return UFix64(nextTime!)
     }
-
-    /// Helper function to create common CronSpec patterns
-    /// @param pattern: Pattern name ("every_minute", "hourly", "daily", "weekly", "monthly")
-    /// @param minute: Minute for hourly+ patterns (0-59)
-    /// @param hour: Hour for daily+ patterns (0-23)
-    /// @param dayOfMonth: Day of month for monthly pattern (1-31)
-    /// @param dayOfWeek: Day of week for weekly pattern (0-6, 0=Sunday)
-    /// @return: CronSpec for the pattern, or nil if invalid
-    access(all) fun createCommonCronSpec(
-        pattern: String,
-        minute: Int?,
-        hour: Int?,
-        dayOfMonth: Int?,
-        dayOfWeek: Int?
-    ): FlowCronParser.CronSpec? {
-        switch pattern {
-        case "every_minute":
-            return FlowCronParser.CronSpec(
-                minMask: 0xFFFFFFFFFFFFFFF, // all minutes (bits 0-59)
-                hourMask: 0xFFFFFF,         // all hours (bits 0-23)
-                domMask: 0xFFFFFFFE,        // all days (bits 1-31)
-                monthMask: 0x1FFE,          // all months (bits 1-12) 
-                dowMask: 0x7F,              // all weekdays (bits 0-6)
-                domIsStar: true,
-                dowIsStar: true
-            )
-        case "hourly":
-            let min = minute ?? 0
-            if min < 0 || min > 59 { return nil }
-            return FlowCronParser.CronSpec(
-                minMask: UInt64(1) << UInt64(min),
-                hourMask: 0xFFFFFF,         // all hours
-                domMask: 0xFFFFFFFE,        // all days
-                monthMask: 0x1FFE,          // all months
-                dowMask: 0x7F,              // all weekdays
-                domIsStar: true,
-                dowIsStar: true
-            )
-        case "daily":
-            let min = minute ?? 0
-            let hr = hour ?? 0
-            if min < 0 || min > 59 || hr < 0 || hr > 23 { return nil }
-            return FlowCronParser.CronSpec(
-                minMask: UInt64(1) << UInt64(min),
-                hourMask: UInt32(1) << UInt32(hr),
-                domMask: 0xFFFFFFFE,        // all days
-                monthMask: 0x1FFE,          // all months
-                dowMask: 0x7F,              // all weekdays
-                domIsStar: true,
-                dowIsStar: true
-            )
-        case "weekly":
-            let min = minute ?? 0
-            let hr = hour ?? 0
-            let dow = dayOfWeek ?? 0
-            if min < 0 || min > 59 || hr < 0 || hr > 23 || dow < 0 || dow > 6 { return nil }
-            return FlowCronParser.CronSpec(
-                minMask: UInt64(1) << UInt64(min),
-                hourMask: UInt32(1) << UInt32(hr),
-                domMask: 0xFFFFFFFE,        // all days (will be ignored due to DOW)
-                monthMask: 0x1FFE,          // all months
-                dowMask: UInt8(1) << UInt8(dow),
-                domIsStar: true,
-                dowIsStar: false
-            )
-        case "monthly":
-            let min = minute ?? 0
-            let hr = hour ?? 0
-            let dom = dayOfMonth ?? 1
-            if min < 0 || min > 59 || hr < 0 || hr > 23 || dom < 1 || dom > 31 { return nil }
-            return FlowCronParser.CronSpec(
-                minMask: UInt64(1) << UInt64(min),
-                hourMask: UInt32(1) << UInt32(hr),
-                domMask: UInt32(1) << UInt32(dom),
-                monthMask: 0x1FFE,          // all months
-                dowMask: 0x7F,              // all weekdays (will be ignored due to DOM)
-                domIsStar: false,
-                dowIsStar: true
-            )
-        default:
-            return nil
-        }
-    }
-
 
     /// Internal helper to verify if a callback ID belongs to a FlowCron-managed cron job
     /// @param callbackId: The callback ID to check
