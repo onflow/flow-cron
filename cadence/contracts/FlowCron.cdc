@@ -20,8 +20,6 @@ access(all) contract FlowCron {
     
     /// Emitted when a new cron job is created
     access(all) event CronJobCreated(
-        cronSpec: FlowCronParser.CronSpec, 
-        handlerTypeIdentifier: String, 
         handlerAddress: Address,
         firstExecution: UFix64,
         executionEffort: UInt64,
@@ -35,8 +33,8 @@ access(all) contract FlowCron {
         executionTimestamp: UFix64
     )
     
-    /// Emitted when a cron job is canceled by the user
-    access(all) event CronJobCanceled(callbackId: UInt64, reason: String)
+    /// Emitted when a cron job is canceled through FlowCron
+    access(all) event CronJobCanceled(callbackId: UInt64)
 
     /// Configuration struct for cron jobs
     /// 
@@ -44,31 +42,30 @@ access(all) contract FlowCron {
     /// This struct is stored as data in FlowCallbackScheduler and passed to CronManager
     /// during callback execution for automatic rescheduling.
     access(all) struct CronJobConfig {
-        access(all) let cronSpec: FlowCronParser.CronSpec
-        access(all) let wrappedHandler: Capability<auth(FlowCallbackScheduler.Execute) &{FlowCallbackScheduler.CallbackHandler}>
-        access(all) let data: AnyStruct?
-        access(all) let feeProvider: Capability<auth(FungibleToken.Withdraw) &FlowToken.Vault>
-        access(all) let executionEffort: UInt64
-        access(all) let priority: FlowCallbackScheduler.Priority
-        /// User's CallbackManager for proper callback management integration
+        access(all) let handler: Capability<auth(FlowCallbackScheduler.Execute) &{FlowCallbackScheduler.CallbackHandler}>
         access(all) let callbackManager: Capability<auth(FlowCallbackUtils.Owner) &FlowCallbackUtils.CallbackManager>
+        access(all) let data: AnyStruct?
+        access(all) let cronSpec: FlowCronParser.CronSpec
+        access(all) let priority: FlowCallbackScheduler.Priority
+        access(all) let executionEffort: UInt64
+        access(all) let feeProvider: Capability<auth(FungibleToken.Withdraw) &FlowToken.Vault>
 
         init(
-            cronSpec: FlowCronParser.CronSpec,
-            wrappedHandler: Capability<auth(FlowCallbackScheduler.Execute) &{FlowCallbackScheduler.CallbackHandler}>,
+            handler: Capability<auth(FlowCallbackScheduler.Execute) &{FlowCallbackScheduler.CallbackHandler}>,
+            callbackManager: Capability<auth(FlowCallbackUtils.Owner) &FlowCallbackUtils.CallbackManager>,
             data: AnyStruct?,
-            feeProvider: Capability<auth(FungibleToken.Withdraw) &FlowToken.Vault>,
-            executionEffort: UInt64,
+            cronSpec: FlowCronParser.CronSpec,
             priority: FlowCallbackScheduler.Priority,
-            callbackManager: Capability<auth(FlowCallbackUtils.Owner) &FlowCallbackUtils.CallbackManager>
+            executionEffort: UInt64,
+            feeProvider: Capability<auth(FungibleToken.Withdraw) &FlowToken.Vault>
         ) {
-            self.cronSpec = cronSpec
-            self.wrappedHandler = wrappedHandler
-            self.data = data
-            self.feeProvider = feeProvider
-            self.executionEffort = executionEffort
-            self.priority = priority
+            self.handler = handler
             self.callbackManager = callbackManager
+            self.data = data
+            self.cronSpec = cronSpec
+            self.priority = priority
+            self.executionEffort = executionEffort
+            self.feeProvider = feeProvider
         }
     }
 
@@ -135,8 +132,8 @@ access(all) contract FlowCron {
             
             log("Executing cron job ID: ".concat(id.toString()))
             
-            // Execute the user's wrapped handler
-            let userHandler = config.wrappedHandler.borrow()
+            // Execute the user's handler
+            let userHandler = config.handler.borrow()
                 ?? panic("Cannot borrow user handler capability")
             userHandler.executeCallback(id: id, data: config.data)
             
@@ -159,7 +156,6 @@ access(all) contract FlowCron {
             )
         }
 
-        /// ViewResolver.Resolver implementation
         access(all) view fun getViews(): [Type] {
             return []
         }
@@ -247,13 +243,13 @@ access(all) contract FlowCron {
         
         // Create cron configuration
         let cronConfig = CronJobConfig(
-            cronSpec: cronSpec,
-            wrappedHandler: handler,
+            handler: handler,
+            callbackManager: callbackManager,
             data: data,
-            feeProvider: feeProvider,
-            executionEffort: executionEffort,
+            cronSpec: cronSpec,
             priority: priority,
-            callbackManager: callbackManager
+            executionEffort: executionEffort,
+            feeProvider: feeProvider
         )
         
         // Use CallbackManager for scheduling
@@ -268,13 +264,7 @@ access(all) contract FlowCron {
             callbackManager: manager
         ) ?? panic("Cannot find next execution time within horizon")
         
-        // Get handler info for event
-        let handlerRef = handler.borrow()
-            ?? panic("Cannot borrow handler capability for event")
-        
         emit CronJobCreated(
-            cronSpec: cronSpec,
-            handlerTypeIdentifier: handlerRef.getType().identifier,
             handlerAddress: handler.address,
             firstExecution: nextTimeUFix64,
             executionEffort: executionEffort,
@@ -290,10 +280,20 @@ access(all) contract FlowCron {
         callbackManager: Capability<auth(FlowCallbackUtils.Owner) &FlowCallbackUtils.CallbackManager>,
         callbackId: UInt64
     ): @FlowToken.Vault {
+        // First verify this is actually a cron job managed by FlowCron
+        if let callbackData = FlowCallbackScheduler.getCallbackData(id: callbackId) {
+            // Check if the callback handler is our CronManager
+            if !callbackData.handlerTypeIdentifier.contains("FlowCron.CronManager") {
+                panic("Cannot cancel callback: ID \(callbackId) is not a FlowCron-managed cron job")
+            }
+        } else {
+            panic("Cannot cancel callback: ID \(callbackId) not found")
+        }
+        
         let manager = callbackManager.borrow()
             ?? panic("Cannot borrow callback manager capability")
         
-        emit CronJobCanceled(callbackId: callbackId, reason: "User canceled")
+        emit CronJobCanceled(callbackId: callbackId)
         
         return <-manager.cancel(id: callbackId)
     }
