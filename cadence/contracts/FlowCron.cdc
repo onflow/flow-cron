@@ -1,21 +1,14 @@
-import "FlowCallbackScheduler"
-import "FlowCallbackUtils"
+import "FlowTransactionScheduler"
+import "FlowTransactionSchedulerUtils"
 import "FlowCronParser"
 import "FlowToken"
 import "FungibleToken"
 
-/// FlowCron: Lightweight cron-based scheduling for recurring callbacks on Flow blockchain.
+/// FlowCron: Lightweight cron-based scheduling for recurring transactions on Flow blockchain.
 /// 
-/// This utility contract wraps any CallbackHandler with autonomous cron functionality,
+/// This utility contract wraps any TransactionHandler with autonomous cron functionality,
 /// enabling recurring executions based on cron expressions parsed into efficient bitmasks.
-/// Built on FlowCallbackScheduler and FlowCallbackUtils for seamless integration.
-/// 
-/// Key Features:
-/// - Bitmask-based scheduling for optimal performance
-/// - Automatic rescheduling with robust error handling
-/// - Full integration with Flow's callback management system
-/// - Comprehensive monitoring and statistics
-/// - Lightweight and gas-efficient design
+/// Built on FlowTransactionScheduler and FlowTransactionSchedulerUtils for seamless integration.
 access(all) contract FlowCron {
     
     /// Emitted when a new cron job is created
@@ -28,39 +21,39 @@ access(all) contract FlowCron {
     
     /// Emitted after each cron job execution (before rescheduling next execution)
     access(all) event CronJobExecuted(
-        callbackId: UInt64, 
+        transactionId: UInt64, 
         nextExecution: UFix64?,
         executionTimestamp: UFix64
     )
     
     /// Emitted when a cron job is canceled through FlowCron
-    access(all) event CronJobCanceled(callbackId: UInt64)
+    access(all) event CronJobCanceled(transactionId: UInt64)
 
     /// Configuration struct for cron jobs
     /// 
     /// Contains all necessary information for cron job execution and rescheduling.
-    /// This struct is stored as data in FlowCallbackScheduler and passed to CronManager
-    /// during callback execution for automatic rescheduling.
+    /// This struct is stored as data in FlowTransactionScheduler and passed to CronManager
+    /// during transaction execution for automatic rescheduling.
     access(all) struct CronJobConfig {
-        access(all) let handler: Capability<auth(FlowCallbackScheduler.Execute) &{FlowCallbackScheduler.CallbackHandler}>
-        access(all) let callbackManager: Capability<auth(FlowCallbackUtils.Owner) &FlowCallbackUtils.CallbackManager>
+        access(all) let handler: Capability<auth(FlowTransactionScheduler.Execute) &{FlowTransactionScheduler.TransactionHandler}>
+        access(all) let manager: Capability<auth(FlowTransactionSchedulerUtils.Owner) &FlowTransactionSchedulerUtils.Manager>
         access(all) let data: AnyStruct?
         access(all) let cronSpec: FlowCronParser.CronSpec
-        access(all) let priority: FlowCallbackScheduler.Priority
+        access(all) let priority: FlowTransactionScheduler.Priority
         access(all) let executionEffort: UInt64
         access(all) let feeProvider: Capability<auth(FungibleToken.Withdraw) &FlowToken.Vault>
 
         init(
-            handler: Capability<auth(FlowCallbackScheduler.Execute) &{FlowCallbackScheduler.CallbackHandler}>,
-            callbackManager: Capability<auth(FlowCallbackUtils.Owner) &FlowCallbackUtils.CallbackManager>,
+            handler: Capability<auth(FlowTransactionScheduler.Execute) &{FlowTransactionScheduler.TransactionHandler}>,
+            manager: Capability<auth(FlowTransactionSchedulerUtils.Owner) &FlowTransactionSchedulerUtils.Manager>,
             data: AnyStruct?,
             cronSpec: FlowCronParser.CronSpec,
-            priority: FlowCallbackScheduler.Priority,
+            priority: FlowTransactionScheduler.Priority,
             executionEffort: UInt64,
             feeProvider: Capability<auth(FungibleToken.Withdraw) &FlowToken.Vault>
         ) {
             self.handler = handler
-            self.callbackManager = callbackManager
+            self.manager = manager
             self.data = data
             self.cronSpec = cronSpec
             self.priority = priority
@@ -72,28 +65,28 @@ access(all) contract FlowCron {
     /// Display data for cron jobs in client applications
     /// 
     /// Contains essential information for building cron job management interfaces.
-    /// All data is sourced from FlowCallbackScheduler.CallbackData for consistency.
+    /// All data is sourced from FlowTransactionScheduler.TransactionData for consistency.
     access(all) struct CronJobDisplayData {
-        access(all) let callbackId: UInt64
+        access(all) let transactionId: UInt64
         access(all) let name: String
-        access(all) let status: FlowCallbackScheduler.Status
+        access(all) let status: FlowTransactionScheduler.Status
         access(all) let nextExecution: UFix64
-        access(all) let priority: FlowCallbackScheduler.Priority
+        access(all) let priority: FlowTransactionScheduler.Priority
         access(all) let executionEffort: UInt64
         access(all) let fees: UFix64
         access(all) let owner: Address
         
         init(
-            callbackId: UInt64,
+            transactionId: UInt64,
             name: String,
-            status: FlowCallbackScheduler.Status,
+            status: FlowTransactionScheduler.Status,
             nextExecution: UFix64,
-            priority: FlowCallbackScheduler.Priority,
+            priority: FlowTransactionScheduler.Priority,
             executionEffort: UInt64,
             fees: UFix64,
             owner: Address
         ) {
-            self.callbackId = callbackId
+            self.transactionId = transactionId
             self.name = name
             self.status = status
             self.nextExecution = nextExecution
@@ -106,12 +99,12 @@ access(all) contract FlowCron {
 
     /// Centralized manager that handles cron job execution for all users
     /// 
-    /// Implements CallbackHandler interface to receive scheduled callbacks from FlowCallbackScheduler.
+    /// Implements TransactionHandler interface to receive scheduled transactions from FlowTransactionScheduler.
     /// When a cron job executes, this manager:
     /// 1. Executes the user's wrapped handler
     /// 2. Calculates the next execution time using efficient cron algorithm  
-    /// 3. Reschedules the job through the user's CallbackManager for proper management integration
-    access(all) resource CronManager: FlowCallbackScheduler.CallbackHandler {
+    /// 3. Reschedules the job through the user's Manager for proper management integration
+    access(all) resource CronManager: FlowTransactionScheduler.TransactionHandler {
         access(all) let name: String
         access(all) let description: String
 
@@ -125,9 +118,9 @@ access(all) contract FlowCron {
         }
         
         /// Executes a cron job and automatically reschedules the next execution
-        /// Called by FlowCallbackScheduler when a scheduled callback is triggered
-        access(FlowCallbackScheduler.Execute)
-        fun executeCallback(id: UInt64, data: AnyStruct?) {
+        /// Called by FlowTransactionScheduler when a scheduled transaction is triggered
+        access(FlowTransactionScheduler.Execute)
+        fun executeTransaction(id: UInt64, data: AnyStruct?) {
             let config = data as! CronJobConfig
             
             log("Executing cron job ID: ".concat(id.toString()))
@@ -135,22 +128,22 @@ access(all) contract FlowCron {
             // Execute the user's handler
             let userHandler = config.handler.borrow()
                 ?? panic("Cannot borrow user handler capability")
-            userHandler.executeCallback(id: id, data: config.data)
+            userHandler.executeTransaction(id: id, data: config.data)
             
-            // Use user's CallbackManager for rescheduling
-            let userCallbackManager = config.callbackManager.borrow()
-                ?? panic("Cannot borrow user's callback manager capability for rescheduling")
+            // Use user's Manager for rescheduling
+            let userManager = config.manager.borrow()
+                ?? panic("Cannot borrow user's transaction manager capability for rescheduling")
             
             // Calculate and schedule next execution using internal helper
             let currentTime = UInt64(getCurrentBlock().timestamp)
             let nextTimeUFix64 = FlowCron.internalSchedule(
                 config: config,
                 afterUnix: currentTime,
-                callbackManager: userCallbackManager
+                manager: userManager
             )
             
             emit CronJobExecuted(
-                callbackId: id, 
+                transactionId: id, 
                 nextExecution: nextTimeUFix64,
                 executionTimestamp: getCurrentBlock().timestamp
             )
@@ -174,17 +167,17 @@ access(all) contract FlowCron {
     /// @param executionEffort: Computational effort required for execution
     /// @param feeProvider: Capability to withdraw fees for scheduling (fees calculated automatically)
     access(all) fun scheduleCronJob(
-        handler: Capability<auth(FlowCallbackScheduler.Execute) &{FlowCallbackScheduler.CallbackHandler}>,
-        callbackManager: Capability<auth(FlowCallbackUtils.Owner) &FlowCallbackUtils.CallbackManager>,
+        handler: Capability<auth(FlowTransactionScheduler.Execute) &{FlowTransactionScheduler.TransactionHandler}>,
+        manager: Capability<auth(FlowTransactionSchedulerUtils.Owner) &FlowTransactionSchedulerUtils.Manager>,
         data: AnyStruct?,
         cronSpec: FlowCronParser.CronSpec,
-        priority: FlowCallbackScheduler.Priority,
+        priority: FlowTransactionScheduler.Priority,
         executionEffort: UInt64,
         feeProvider: Capability<auth(FungibleToken.Withdraw) &FlowToken.Vault>
     ) {
         pre {
             handler.check(): "Handler capability must be valid"
-            callbackManager.check(): "Callback manager capability must be valid"
+            manager.check(): "Transaction manager capability must be valid"
             feeProvider.check(): "Fee provider capability must be valid"
             executionEffort > 0: "Execution effort must be greater than 0"
             cronSpec.minMask > 0 && cronSpec.hourMask > 0 && cronSpec.domMask > 0 && cronSpec.monthMask > 0 && cronSpec.dowMask > 0: "CronSpec must have valid bitmasks"
@@ -193,7 +186,7 @@ access(all) contract FlowCron {
         // Create cron configuration
         let cronConfig = CronJobConfig(
             handler: handler,
-            callbackManager: callbackManager,
+            manager: manager,
             data: data,
             cronSpec: cronSpec,
             priority: priority,
@@ -201,16 +194,16 @@ access(all) contract FlowCron {
             feeProvider: feeProvider
         )
         
-        // Use CallbackManager for scheduling
-        let manager = callbackManager.borrow()
-            ?? panic("Cannot borrow callback manager capability")
+        // Use Manager for scheduling
+        let userManager = manager.borrow()
+            ?? panic("Cannot borrow transaction manager capability")
         
         // Calculate and schedule first execution using internal helper
         let currentTime = UInt64(getCurrentBlock().timestamp)
         let nextTimeUFix64 = self.internalSchedule(
             config: cronConfig,
             afterUnix: currentTime,
-            callbackManager: manager
+            manager: userManager
         ) ?? panic("Cannot find next execution time within horizon")
         
         emit CronJobCreated(
@@ -221,68 +214,68 @@ access(all) contract FlowCron {
         )
     }
 
-    /// Cancel a cron job using the user's CallbackManager
-    /// @param callbackManager: User's CallbackManager
-    /// @param callbackId: The callback ID of the cron job to cancel
-    /// @return: Refunded fees from the canceled callback
+    /// Cancel a cron job using the user's Manager
+    /// @param manager: User's Manager
+    /// @param transactionId: The transaction ID of the cron job to cancel
+    /// @return: Refunded fees from the canceled transaction
     access(all) fun cancelCronJob(
-        callbackManager: Capability<auth(FlowCallbackUtils.Owner) &FlowCallbackUtils.CallbackManager>,
-        callbackId: UInt64
+        manager: Capability<auth(FlowTransactionSchedulerUtils.Owner) &FlowTransactionSchedulerUtils.Manager>,
+        transactionId: UInt64
     ): @FlowToken.Vault {
         // First verify this is actually a cron job managed by FlowCron
-        if !self.isCronJob(callbackId: callbackId) {
-            panic("Cannot cancel callback: ID \(callbackId) is not a FlowCron-managed cron job")
+        if !self.isCronJob(transactionId: transactionId) {
+            panic("Cannot cancel transaction: ID \(transactionId) is not a FlowCron-managed cron job")
         }
         
-        let manager = callbackManager.borrow()
-            ?? panic("Cannot borrow callback manager capability")
+        let userManager = manager.borrow()
+            ?? panic("Cannot borrow transaction manager capability")
         
-        emit CronJobCanceled(callbackId: callbackId)
+        emit CronJobCanceled(transactionId: transactionId)
         
-        return <-manager.cancel(id: callbackId)
+        return <-userManager.cancel(id: transactionId)
     }
 
-    /// Get all cron job IDs from a user's CallbackManager
-    /// Filters callbacks to only return those managed by FlowCron
-    /// @param callbackManager: User's CallbackManager
-    /// @return: Array of callback IDs that are cron jobs
+    /// Get all cron job IDs from a user's Manager
+    /// Filters transactions to only return those managed by FlowCron
+    /// @param manager: User's Manager
+    /// @return: Array of transaction IDs that are cron jobs
     access(all) fun getAllCronJobIDs(
-        callbackManager: Capability<&FlowCallbackUtils.CallbackManager>
+        manager: Capability<&FlowTransactionSchedulerUtils.Manager>
     ): [UInt64] {
-        let manager = callbackManager.borrow()
-            ?? panic("Cannot borrow callback manager capability")
-        let allCallbacks = manager.getCallbackIDs()
+        let userManager = manager.borrow()
+            ?? panic("Cannot borrow transaction manager capability")
+        let allTransactions = userManager.getTransactionIDs()
         let cronJobIDs: [UInt64] = []
         
-        // Filter for callbacks that are managed by our CronManager
-        for callbackId in allCallbacks {
-            if self.isCronJob(callbackId: callbackId) {
-                cronJobIDs.append(callbackId)
+        // Filter for transactions that are managed by our CronManager
+        for transactionId in allTransactions {
+            if self.isCronJob(transactionId: transactionId) {
+                cronJobIDs.append(transactionId)
             }
         }
         
         return cronJobIDs
     }
 
-    /// Get cron job metadata for display in UI using only native FlowCallbackScheduler data
-    /// @param callbackId: The callback ID of the cron job
+    /// Get cron job metadata for display in UI using only native FlowTransactionScheduler data
+    /// @param transactionId: The transaction ID of the cron job
     /// @return: CronJobDisplayData for the UI, or nil if not found/not a cron job
-    access(all) fun getCronJobDisplayData(callbackId: UInt64): CronJobDisplayData? {
-        if let callbackData = FlowCallbackScheduler.getCallbackData(id: callbackId) {
-            // Verify this is a FlowCron managed callback
-            if !self.isCronJob(callbackId: callbackId) {
+    access(all) fun getCronJobDisplayData(transactionId: UInt64): CronJobDisplayData? {
+        if let transactionData = FlowTransactionScheduler.getTransactionData(id: transactionId) {
+            // Verify this is a FlowCron managed transaction
+            if !self.isCronJob(transactionId: transactionId) {
                 return nil
             }
             
             return CronJobDisplayData(
-                callbackId: callbackId,
-                name: callbackData.name,
-                status: callbackData.status,
-                nextExecution: callbackData.scheduledTimestamp,
-                priority: callbackData.priority,
-                executionEffort: callbackData.executionEffort,
-                fees: callbackData.fees,
-                owner: callbackData.handlerAddress
+                transactionId: transactionId,
+                name: transactionData.handlerTypeIdentifier,
+                status: transactionData.status,
+                nextExecution: transactionData.scheduledTimestamp,
+                priority: transactionData.priority,
+                executionEffort: transactionData.executionEffort,
+                fees: transactionData.fees,
+                owner: transactionData.handlerAddress
             )
         }
         
@@ -290,16 +283,16 @@ access(all) contract FlowCron {
     }
 
     /// Get all cron jobs for a user with full display data
-    /// @param callbackManager: User's CallbackManager
+    /// @param manager: User's Manager
     /// @return: Array of CronJobDisplayData for all user's cron jobs
     access(all) fun getAllCronJobsForUser(
-        callbackManager: Capability<&FlowCallbackUtils.CallbackManager>
+        manager: Capability<&FlowTransactionSchedulerUtils.Manager>
     ): [CronJobDisplayData] {
-        let cronJobIds = self.getAllCronJobIDs(callbackManager: callbackManager)
+        let cronJobIds = self.getAllCronJobIDs(manager: manager)
         let cronJobs: [CronJobDisplayData] = []
         
-        for callbackId in cronJobIds {
-            if let displayData = self.getCronJobDisplayData(callbackId: callbackId) {
+        for transactionId in cronJobIds {
+            if let displayData = self.getCronJobDisplayData(transactionId: transactionId) {
                 cronJobs.append(displayData)
             }
         }
@@ -307,22 +300,22 @@ access(all) contract FlowCron {
         return cronJobs
     }
 
-    /// Get cron job status using the user's CallbackManager
-    /// @param callbackManager: User's CallbackManager
-    /// @param callbackId: The callback ID of the cron job
-    /// @return: Status of the callback, or nil if not found or not a cron job
+    /// Get cron job status using the user's Manager
+    /// @param manager: User's Manager
+    /// @param transactionId: The transaction ID of the cron job
+    /// @return: Status of the transaction, or nil if not found or not a cron job
     access(all) fun getCronJobStatus(
-        callbackManager: Capability<&FlowCallbackUtils.CallbackManager>,
-        callbackId: UInt64
-    ): FlowCallbackScheduler.Status? {
+        manager: Capability<&FlowTransactionSchedulerUtils.Manager>,
+        transactionId: UInt64
+    ): FlowTransactionScheduler.Status? {
         // First verify this is actually a cron job managed by FlowCron
-        if !self.isCronJob(callbackId: callbackId) {
+        if !self.isCronJob(transactionId: transactionId) {
             return nil // Not a cron job or not found
         }
         
-        let manager = callbackManager.borrow()
-            ?? panic("Cannot borrow callback manager capability")
-        return manager.getCallbackStatus(id: callbackId)
+        let userManager = manager.borrow()
+            ?? panic("Cannot borrow transaction manager capability")
+        return userManager.getTransactionStatus(id: transactionId)
     }
 
     /// Calculate next execution time for a cron spec
@@ -344,23 +337,23 @@ access(all) contract FlowCron {
         return FlowCronParser.parse(expression: expression)
     }
 
-    /// Internal helper function for scheduling callbacks with common logic
+    /// Internal helper function for scheduling transactions with common logic
     /// Used by both initial scheduling and rescheduling to ensure consistent behavior
     /// @param config: CronJobConfig containing all scheduling parameters
     /// @param afterUnix: Calculate next execution time after this timestamp
-    /// @param callbackManager: CallbackManager to use for scheduling
+    /// @param manager: Manager to use for scheduling
     /// @return: Next execution timestamp, or nil if no valid time found
     access(self) fun internalSchedule(
         config: CronJobConfig,
         afterUnix: UInt64,
-        callbackManager: auth(FlowCallbackUtils.Owner) &FlowCallbackUtils.CallbackManager
+        manager: auth(FlowTransactionSchedulerUtils.Owner) &FlowTransactionSchedulerUtils.Manager
     ): UFix64? {
         // Calculate next execution time
         let nextTime = FlowCronParser.nextTick(spec: config.cronSpec, afterUnix: afterUnix)
         if nextTime == nil { return nil }
         
-        // Use FlowCallbackScheduler.estimate() to calculate exact fee needed
-        let estimate = FlowCallbackScheduler.estimate(
+        // Use FlowTransactionScheduler.estimate() to calculate exact fee needed
+        let estimate = FlowTransactionScheduler.estimate(
             data: config,
             timestamp: UFix64(nextTime!),
             priority: config.priority,
@@ -369,7 +362,7 @@ access(all) contract FlowCron {
         
         // Check if estimation failed
         if estimate.flowFee == nil {
-            panic(estimate.error ?? "Failed to estimate callback fee")
+            panic(estimate.error ?? "Failed to estimate transaction fee")
         }
         
         // Get fees for execution using calculated amount
@@ -379,12 +372,12 @@ access(all) contract FlowCron {
         
         // Get FlowCron's manager capability
         let cronManagerCap = FlowCron.account.capabilities.get<
-            auth(FlowCallbackScheduler.Execute) &{FlowCallbackScheduler.CallbackHandler}
+            auth(FlowTransactionScheduler.Execute) &{FlowTransactionScheduler.TransactionHandler}
         >(/public/cronManager)
         
-        // Schedule using CallbackManager
-        callbackManager.schedule(
-            callback: cronManagerCap,
+        // Schedule using Manager
+        manager.schedule(
+            handlerCap: cronManagerCap,
             data: config,
             timestamp: UFix64(nextTime!),
             priority: config.priority,
@@ -395,12 +388,12 @@ access(all) contract FlowCron {
         return UFix64(nextTime!)
     }
 
-    /// Internal helper to verify if a callback ID belongs to a FlowCron-managed cron job
-    /// @param callbackId: The callback ID to check
+    /// Internal helper to verify if a transaction ID belongs to a FlowCron-managed cron job
+    /// @param transactionId: The transaction ID to check
     /// @return: True if it's a FlowCron cron job, false otherwise
-    access(self) fun isCronJob(callbackId: UInt64): Bool {
-        if let callbackData = FlowCallbackScheduler.getCallbackData(id: callbackId) {
-            return callbackData.handlerAddress == FlowCron.account.address
+    access(self) fun isCronJob(transactionId: UInt64): Bool {
+        if let transactionData = FlowTransactionScheduler.getTransactionData(id: transactionId) {
+            return transactionData.handlerAddress == FlowCron.account.address
         }
         return false
     }
@@ -416,7 +409,7 @@ access(all) contract FlowCron {
         
         // Publish capability to the CronManager
         let cronManagerCap = self.account.capabilities.storage.issue<
-            auth(FlowCallbackScheduler.Execute) &{FlowCallbackScheduler.CallbackHandler}
+            auth(FlowTransactionScheduler.Execute) &{FlowTransactionScheduler.TransactionHandler}
         >(/storage/cronManager)
         self.account.capabilities.publish(cronManagerCap, at: /public/cronManager)
     }

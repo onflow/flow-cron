@@ -12,27 +12,21 @@
         "testing": "0000000000000007"
       }
     },
-    "FlowCronParserMinimal": {
-      "source": "cadence/contracts/FlowCronParser_minimal.cdc",
-      "aliases": {
-        "testing": "0000000000000008"
-      }
-    },
     "Counter": {
       "source": "cadence/contracts/Counter.cdc",
       "aliases": {
         "testing": "0000000000000007"
       }
     },
-    "FlowCallbackScheduler": {
-      "source": "core-contracts/FlowCallbackScheduler.cdc",
+    "FlowTransactionScheduler": {
+      "source": "core-contracts/FlowTransactionScheduler.cdc",
       "aliases": {
         "emulator": "f8d6e0586b0a20c7",
         "testing": "f8d6e0586b0a20c7"
       }
     },
-    "FlowCallbackUtils": {
-      "source": "core-contracts/FlowCallbackUtils.cdc",
+    "FlowTransactionSchedulerUtils": {
+      "source": "core-contracts/FlowTransactionSchedulerUtils.cdc",
       "aliases": {
         "emulator": "f8d6e0586b0a20c7",
         "testing": "f8d6e0586b0a20c7"

@@ -6,7 +6,6 @@
 /// DOM/DOW SEMANTICS (Vixie rule): If both DOM and DOW constrained, day matches if DOM OR DOW matches
 /// TIME BASIS: Flow blockchain canonical time (getCurrentBlock().timestamp), treated as UTC-like chain time
 /// HORIZON: +5 years maximum lookahead from any given timestamp
-///
 access(all) contract FlowCronParser {
 
     /// Container for parsed cron specification as bitmasks
