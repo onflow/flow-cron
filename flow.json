@@ -6,8 +6,8 @@
         "testing": "0000000000000007"
       }
     },
-    "FlowCronParser": {
-      "source": "cadence/contracts/FlowCronParser.cdc",
+    "FlowCronUtils": {
+      "source": "cadence/contracts/FlowCronUtils.cdc",
       "aliases": {
         "testing": "0000000000000007"
       }
@@ -127,11 +127,7 @@
   },
   "deployments": {
     "emulator": {
-      "emulator-account": [
-        "FlowCron",
-        "FlowCronParser",
-        "Counter"
-      ]
+      "emulator-account": ["FlowCron", "FlowCronUtils", "Counter"]
     }
   }
 }

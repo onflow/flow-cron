@@ -1,4 +1,4 @@
-/// FlowCronParser: A Cadence contract for computing next run timestamps 
+/// FlowCronUtils: A Cadence contract for computing next run timestamps 
 /// from standard 5-field cron expressions on Flow blockchain.
 ///
 /// CRON FORMAT: minute (0-59) hour (0-23) day-of-month (1-31) month (1-12) day-of-week (0-6, 0=Sun)
@@ -6,7 +6,7 @@
 /// DOM/DOW SEMANTICS (Vixie rule): If both DOM and DOW constrained, day matches if DOM OR DOW matches
 /// TIME BASIS: Flow blockchain canonical time (getCurrentBlock().timestamp), treated as UTC-like chain time
 /// HORIZON: +5 years maximum lookahead from any given timestamp
-access(all) contract FlowCronParser {
+access(all) contract FlowCronUtils {
 
     /// DateTime struct for holding date/time components
     access(all) struct DateTime {

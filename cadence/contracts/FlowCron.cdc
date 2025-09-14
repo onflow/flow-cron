@@ -1,6 +1,6 @@
 import "FlowTransactionScheduler"
 import "FlowTransactionSchedulerUtils"
-import "FlowCronParser"
+import "FlowCronUtils"
 import "FlowToken"
 import "FungibleToken"
 import "ViewResolver"
@@ -41,7 +41,7 @@ access(all) contract FlowCron {
         
         /// Method for scheduling cron jobs with all capabilities
         access(Owner) fun scheduleJob(
-            cronSpec: FlowCronParser.CronSpec,
+            cronSpec: FlowCronUtils.CronSpec,
             cronHandlerCap: Capability<auth(FlowTransactionScheduler.Execute) &{FlowTransactionScheduler.TransactionHandler}>,
             wrappedHandlerCap: Capability<auth(FlowTransactionScheduler.Execute) &{FlowTransactionScheduler.TransactionHandler}>,
             schedulerManagerCap: Capability<auth(FlowTransactionSchedulerUtils.Owner) &FlowTransactionSchedulerUtils.Manager>,
@@ -88,12 +88,12 @@ access(all) contract FlowCron {
             
             // Calculate next execution time
             let currentTime = UInt64(getCurrentBlock().timestamp)
-            let nextTime = FlowCronParser.nextTick(spec: cronSpec, afterUnix: currentTime)
+            let nextTime = FlowCronUtils.nextTick(spec: cronSpec, afterUnix: currentTime)
                 ?? panic("Cannot find next execution time for cron expression")
             // Calculate future execution time for double scheduling
             // To add redundancy and be sure that the cron job continues even if the next execution fails
             // We will always keep 2 scheduled executions 1 for the next and the 2 for the future
-            let futureTime = FlowCronParser.nextTick(spec: cronSpec, afterUnix: nextTime)
+            let futureTime = FlowCronUtils.nextTick(spec: cronSpec, afterUnix: nextTime)
                 ?? panic("Cannot find future execution time for cron expression")
             
             // Schedule both next and future transactions
@@ -130,7 +130,7 @@ access(all) contract FlowCron {
             // 1. SCHEDULE FUTURE TRANSACTION FIRST (ensure continuity)
             // Get the future execution time for rescheduling that is the next execution after the next execution (future)
             // This will prevent the cron job from being blocked if the next execution fails
-            let futureTime = FlowCronParser.nextTick(spec: context.cronSpec, afterUnix: UInt64(jobRef.nextExecution!))
+            let futureTime = FlowCronUtils.nextTick(spec: context.cronSpec, afterUnix: UInt64(jobRef.nextExecution!))
                 ?? panic("Cannot find future execution time for cron expression")
             // Schedule the new future transaction using helper function
             let futureTransactionId = self.scheduleTransaction(
@@ -358,7 +358,7 @@ access(all) contract FlowCron {
         // The id of the cron job
         access(all) let id: UInt64
         // The cron spec of the cron job
-        access(all) let cronSpec: FlowCronParser.CronSpec
+        access(all) let cronSpec: FlowCronUtils.CronSpec
 
         // Wrapped handler cap is into the cron job to be able to retrieve its data for views
         // If it was just in context we wouldn't be able to retrieve the data for views
@@ -379,7 +379,7 @@ access(all) contract FlowCron {
         
         init(
             id: UInt64,
-            cronSpec: FlowCronParser.CronSpec,
+            cronSpec: FlowCronUtils.CronSpec,
             wrappedHandlerCap: Capability<auth(FlowTransactionScheduler.Execute) &{FlowTransactionScheduler.TransactionHandler}>,
             createdAt: UFix64
         ) {
@@ -451,7 +451,7 @@ access(all) contract FlowCron {
     // This data is unaccessible and it's just what is needed to execute and reschedule the cron job
     access(all) struct CronJobContext {
         access(all) let jobId: UInt64
-        access(all) let cronSpec: FlowCronParser.CronSpec
+        access(all) let cronSpec: FlowCronUtils.CronSpec
         access(all) let cronHandlerCap: Capability<auth(FlowTransactionScheduler.Execute) &{FlowTransactionScheduler.TransactionHandler}>
         access(all) let schedulerManagerCap: Capability<auth(FlowTransactionSchedulerUtils.Owner) &FlowTransactionSchedulerUtils.Manager>
         access(all) let feeProviderCap: Capability<auth(FungibleToken.Withdraw) &FlowToken.Vault>
@@ -461,7 +461,7 @@ access(all) contract FlowCron {
         
         init(
             jobId: UInt64,
-            cronSpec: FlowCronParser.CronSpec,
+            cronSpec: FlowCronUtils.CronSpec,
             cronHandlerCap: Capability<auth(FlowTransactionScheduler.Execute) &{FlowTransactionScheduler.TransactionHandler}>,
             schedulerManagerCap: Capability<auth(FlowTransactionSchedulerUtils.Owner) &FlowTransactionSchedulerUtils.Manager>,
             feeProviderCap: Capability<auth(FungibleToken.Withdraw) &FlowToken.Vault>,
