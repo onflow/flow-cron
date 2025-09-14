@@ -3,256 +3,512 @@ import "FlowTransactionSchedulerUtils"
 import "FlowCronParser"
 import "FlowToken"
 import "FungibleToken"
+import "ViewResolver"
 
-/// FlowCron: Lightweight cron-based scheduling for recurring transactions on Flow blockchain.
-/// 
-/// This utility contract wraps any TransactionHandler with autonomous cron functionality,
-/// enabling recurring executions based on cron expressions parsed into efficient bitmasks.
-/// Built on FlowTransactionScheduler and FlowTransactionSchedulerUtils for seamless integration.
+/// FlowCron: A utility for scheduling recurring transactions using cron expressions.
 access(all) contract FlowCron {
     
-    /// Singleton instance used to store the shared CronManager capability
-    /// and route all cron job functionality
-    access(self) var sharedCronManager: Capability<auth(FlowTransactionScheduler.Execute) &{FlowTransactionScheduler.TransactionHandler}>
+    /// Storage and public paths for CronManager resources
+    access(all) let CronManagerStoragePath: StoragePath
+    access(all) let CronManagerPublicPath: PublicPath
     
-    /// Storage path for the singleton CronManager resource
-    access(all) let storagePath: StoragePath
+    /// Entitlements
+    access(all) entitlement Owner
     
-    /// Emitted when a cron job is rescheduled for its next execution
-    access(all) event CronJobRescheduled(
-        transactionId: UInt64,
-        nextExecution: UFix64?
-    )
-
-    /// Configuration struct for cron jobs
-    /// 
-    /// Contains all necessary information for cron job execution and rescheduling.
-    /// This struct is stored as data in FlowTransactionScheduler and passed to CronManager
-    /// during transaction execution for automatic rescheduling.
-    access(all) struct CronJobConfig {
-        access(all) let handler: Capability<auth(FlowTransactionScheduler.Execute) &{FlowTransactionScheduler.TransactionHandler}>
-        access(all) let manager: Capability<auth(FlowTransactionSchedulerUtils.Owner) &FlowTransactionSchedulerUtils.Manager>
-        access(all) let data: AnyStruct?
-        access(all) let cronSpec: FlowCronParser.CronSpec
-        access(all) let priority: FlowTransactionScheduler.Priority
-        access(all) let executionEffort: UInt64
-        access(all) let feeProvider: Capability<auth(FungibleToken.Withdraw) &FlowToken.Vault>
-
-        init(
-            handler: Capability<auth(FlowTransactionScheduler.Execute) &{FlowTransactionScheduler.TransactionHandler}>,
-            manager: Capability<auth(FlowTransactionSchedulerUtils.Owner) &FlowTransactionSchedulerUtils.Manager>,
-            data: AnyStruct?,
-            cronSpec: FlowCronParser.CronSpec,
-            priority: FlowTransactionScheduler.Priority,
-            executionEffort: UInt64,
-            feeProvider: Capability<auth(FungibleToken.Withdraw) &FlowToken.Vault>
-        ) {
-            self.handler = handler
-            self.manager = manager
-            self.data = data
-            self.cronSpec = cronSpec
-            self.priority = priority
-            self.executionEffort = executionEffort
-            self.feeProvider = feeProvider
-        }
-    }
-
-    /// Centralized manager that handles cron job execution for all users
-    /// 
-    /// Implements TransactionHandler interface to receive scheduled transactions from FlowTransactionScheduler.
-    /// When a cron job executes, this manager:
-    /// 1. Executes the user's wrapped handler
-    /// 2. Calculates the next execution time using efficient cron algorithm  
-    /// 3. Reschedules the job through the user's Manager for proper management integration
-    access(all) resource CronManager: FlowTransactionScheduler.TransactionHandler {
-        access(all) let name: String
-        access(all) let description: String
-
-        init(name: String, description: String) {
-            pre {
-                name.length < 40: "Callback handler name must be less than 40 characters"
-                description.length < 200: "Callback handler description must be less than 200 characters"
-            }
-            self.name = name
-            self.description = description
+    /// Events
+    access(all) event CronJobScheduled(jobId: UInt64, nextExecution: UFix64)
+    access(all) event CronJobExecuted(jobId: UInt64, executionCount: UInt64)
+    access(all) event CronJobCancelled(jobId: UInt64)
+    
+    /// CronManager resource that manages cron jobs for a user
+    access(all) resource CronManager: FlowTransactionScheduler.TransactionHandler, ViewResolver.Resolver {
+        
+        /// Dictionary of cron jobs
+        access(self) var jobs: @{UInt64: CronJob}
+        
+        /// Next job Id to assign
+        access(contract) var nextJobId: UInt64
+        
+        /// Mapping of transaction Ids to job Ids
+        /// This is the single source of truth for job-transaction relationships
+        access(self) var transactionToJob: {UInt64: UInt64}
+        
+        init() {
+            self.jobs <- {}
+            self.nextJobId = 1
+            self.transactionToJob = {}
         }
         
-        /// Executes a cron job and automatically reschedules the next execution
-        /// Called by FlowTransactionScheduler when a scheduled transaction is triggered
-        /// 
-        /// IMPORTANT: Next execution is scheduled BEFORE attempting user handler execution.
-        /// This ensures that even if the user's handler fails, the cron job continues recurring.
-        /// Failed executions only affect the current run, not future scheduled executions.
-        access(FlowTransactionScheduler.Execute)
-        fun executeTransaction(id: UInt64, data: AnyStruct?) {
-            // Validate data type first to provide better error messages
-            let config = data as? CronJobConfig
-                ?? panic("Invalid cron job data: Expected CronJobConfig but got \(data?.getType()?.identifier ?? "nil")")
+        /// Method for scheduling cron jobs with all capabilities
+        access(Owner) fun scheduleJob(
+            cronSpec: FlowCronParser.CronSpec,
+            cronManagerCap: Capability<auth(FlowTransactionScheduler.Execute) &{FlowTransactionScheduler.TransactionHandler}>,
+            wrappedHandlerCap: Capability<auth(FlowTransactionScheduler.Execute) &{FlowTransactionScheduler.TransactionHandler}>,
+            schedulerManagerCap: Capability<auth(FlowTransactionSchedulerUtils.Owner) &FlowTransactionSchedulerUtils.Manager>,
+            feeProviderCap: Capability<auth(FungibleToken.Withdraw) &FlowToken.Vault>,
+            data: AnyStruct?,
+            priority: FlowTransactionScheduler.Priority,
+            executionEffort: UInt64
+        ): UInt64 {
+            // Verify the cronManager capability belongs to this account exactly
+            // This is enough because there could be only one cron manager per account
+            assert(
+                cronManagerCap.address == self.owner?.address,
+                message: "The cronManager capability must belong to this CronManager's owner"
+            )
+
+            // Clean up completed or invalid jobs
+            let _ = self.cleanup()
             
-            log("Executing cron job ID: ".concat(id.toString()))
+            // Get job Id and increment counter
+            let jobId = self.nextJobId
+            self.nextJobId = self.nextJobId + 1
             
-            // STEP 1: RESCHEDULE FIRST - ensures continuity even if execution fails
-            let userManager = config.manager.borrow()
-                ?? panic("Cannot borrow user's transaction manager capability for rescheduling")
+            // Create and store cron job internally
+            let job <- create CronJob(
+                id: jobId,
+                cronSpec: cronSpec,
+                wrappedHandlerCap: wrappedHandlerCap,
+                createdAt: getCurrentBlock().timestamp
+            )
+            self.jobs[jobId] <-! job
+
+            // Create execution context that will be used to execute the cron job
+            // It contains all the necessary information to execute the cron job and to reschedule it
+            let context = CronJobContext(
+                jobId: jobId,
+                cronSpec: cronSpec,
+                cronManagerCap: cronManagerCap,
+                schedulerManagerCap: schedulerManagerCap,
+                feeProviderCap: feeProviderCap,
+                data: data,
+                priority: priority,
+                executionEffort: executionEffort
+            )
             
+            // Calculate next execution time
             let currentTime = UInt64(getCurrentBlock().timestamp)
-            let nextTimeUFix64 = FlowCron.internalSchedule(
-                config: config,
-                afterUnix: currentTime,
-                manager: userManager
+            let nextTime = FlowCronParser.nextTick(spec: cronSpec, afterUnix: currentTime)
+                ?? panic("Cannot find next execution time for cron expression")
+            // Calculate future execution time for double scheduling
+            // To add redundancy and be sure that the cron job continues even if the next execution fails
+            // We will always keep 2 scheduled executions 1 for the next and the 2 for the future
+            let futureTime = FlowCronParser.nextTick(spec: cronSpec, afterUnix: nextTime)
+                ?? panic("Cannot find future execution time for cron expression")
+            
+            // Schedule both next and future transactions
+            let nextTransactionId = self.scheduleTransaction(
+                jobId: jobId,
+                context: context,
+                timestamp: UFix64(nextTime),
+            )
+            let futureTransactionId = self.scheduleTransaction(
+                jobId: jobId,
+                context: context,
+                timestamp: UFix64(futureTime)
             )
             
-            // STEP 2: EMIT RESCHEDULED EVENT - shows next execution was scheduled
-            emit CronJobRescheduled(
-                transactionId: id,
-                nextExecution: nextTimeUFix64
-            )
+            // Update job's execution time
+            let jobRef = &self.jobs[jobId] as &CronJob?
+            jobRef!.setExecutionTime(lastExecution: nil, nextExecution: UFix64(nextTime), futureExecution: UFix64(futureTime))
             
-            // STEP 3: EXECUTE USER HANDLER - failures here won't break the recurring schedule
-            let userHandler = config.handler.borrow()
-                ?? panic("Cannot borrow user handler capability")
-            userHandler.executeTransaction(id: id, data: config.data)
+            return jobId
+        }
+        
+        /// Execute a scheduled cron job and reschedule for next execution
+        access(FlowTransactionScheduler.Execute) fun executeTransaction(id: UInt64, data: AnyStruct?) {
+            // Extract execution context
+            let context = data as? CronJobContext
+                ?? panic("Invalid execution data: expected CronJobContext")
+            
+            // Get the job Id associated with the transaction through context
+            let jobId = context.jobId
+            // Get the cron job
+            let jobRef = &self.jobs[jobId] as &CronJob?
+                ?? panic("Cron job not found: ".concat(jobId.toString()))
+
+            // 1. SCHEDULE FUTURE TRANSACTION FIRST (ensure continuity)
+            // Get the future execution time for rescheduling that is the next execution after the next execution (future)
+            // This will prevent the cron job from being blocked if the next execution fails
+            let futureTime = FlowCronParser.nextTick(spec: context.cronSpec, afterUnix: UInt64(jobRef.nextExecution!))
+                ?? panic("Cannot find future execution time for cron expression")
+            // Schedule the new future transaction using helper function
+            let futureTransactionId = self.scheduleTransaction(
+                jobId: jobId,
+                context: context,
+                timestamp: UFix64(futureTime),
+            )
+
+            // 2. UPDATE JOB STATE (move execution times forward)
+            jobRef.setExecutionTime(lastExecution: jobRef.nextExecution!, nextExecution: jobRef.futureExecution!, futureExecution: UFix64(futureTime))
+            
+            // 3. CLEAN UP OLD TRANSACTION MAPPINGS
+            let _ = self.transactionToJob.remove(key: id)
+            
+            // 4. EXECUTE THE CURRENT JOB (Last risky user code that may fail)
+            // This is isolated so that if it fails, all cron infrastructure is already updated
+            jobRef.executeJob(id: id, data: context.data)
+            // Emit execution event (only if execution succeeded)
+            emit CronJobExecuted(
+                jobId: jobId,
+                executionCount: jobRef.executionCount
+            )
         }
 
+        /// Cancel a cron job
+        access(Owner) fun cancelJob(
+            jobId: UInt64,
+            schedulerManagerCap: Capability<auth(FlowTransactionSchedulerUtils.Owner) &FlowTransactionSchedulerUtils.Manager>
+        ): @FlowToken.Vault {
+            pre {
+                self.jobs.containsKey(jobId): "Cron job not found"
+            }
+            
+            // Clean up first to remove any invalid/executed transactions
+            let _ = self.cleanup()
+            
+            // Prepare refund vault to collect refunds
+            var totalRefund <- FlowToken.createEmptyVault(vaultType: Type<@FlowToken.Vault>())
+            
+            // Borrow scheduler manager to cancel transactions if needed
+            let schedulerManager = schedulerManagerCap.borrow()
+                ?? panic("Cannot borrow scheduler manager capability")
+            // Find and cancel all transactions for this job, after this, only scheduled transactions remain
+            for transactionId in self.transactionToJob.keys {
+                if self.transactionToJob[transactionId] == jobId {
+                    let refund <- schedulerManager.cancel(id: transactionId)
+                    totalRefund.deposit(from: <-refund)
+                    let _ = self.transactionToJob.remove(key: transactionId)
+                }
+            }
+            
+            // Remove job destroying it
+            destroy self.jobs.remove(key: jobId)!
+            // Emit event (always, even if no transactions were actually cancelled)
+            emit CronJobCancelled(jobId: jobId)
+            
+            return <-totalRefund
+        }
+        
+        /// Clean up completed or invalid jobs
+        /// Only removes jobs that have no scheduled transactions remaining
+        access(Owner) fun cleanup(): Int {
+            var cleanedUpCount = 0
+            var jobsWithScheduledTransactions: {UInt64: Bool} = {}
+            
+            // Single loop: clean invalid transactions and track jobs with scheduled ones
+            for transactionId in self.transactionToJob.keys {
+                let jobId = self.transactionToJob[transactionId]!
+                
+                // Check if job still exists
+                if !self.jobs.containsKey(jobId) {
+                    let _ = self.transactionToJob.remove(key: transactionId)
+                    cleanedUpCount = cleanedUpCount + 1
+                    continue
+                }
+                
+                // Check if transaction is still scheduled
+                let status = FlowTransactionScheduler.getStatus(id: transactionId)
+                if status == FlowTransactionScheduler.Status.Scheduled {
+                    // Mark job as having scheduled transactions
+                    jobsWithScheduledTransactions[jobId] = true
+                } else {
+                    // Remove non-scheduled transaction
+                    let _ = self.transactionToJob.remove(key: transactionId)
+                    cleanedUpCount = cleanedUpCount + 1
+                }
+            }
+            
+            // Remove jobs that have no scheduled transactions
+            for jobId in self.jobs.keys {
+                if jobsWithScheduledTransactions[jobId] != true {
+                    destroy self.jobs.remove(key: jobId)
+                    cleanedUpCount = cleanedUpCount + 1
+                }
+            }     
+            return cleanedUpCount
+        }
+
+        /// Get a reference to a specific job
+        access(all) fun getJob(jobId: UInt64): &CronJob? {
+            return &self.jobs[jobId]
+        }
+        
+        /// Get all job Ids
+        access(all) fun getJobIds(): [UInt64] {
+            return self.jobs.keys
+        }
+        
+        /// Get all transaction IDs for a specific job
+        access(all) fun getTransactionIdsForJob(jobId: UInt64): [UInt64] {
+            var transactionIds: [UInt64] = []
+            for transactionId in self.transactionToJob.keys {
+                if self.transactionToJob[transactionId] == jobId {
+                    transactionIds.append(transactionId)
+                }
+            }
+            return transactionIds
+        }
+        
+        /// ViewResolver implementation
         access(all) view fun getViews(): [Type] {
-            return []
+            return [
+                Type<CronJobListView>()
+            ]
         }
-
+        
         access(all) fun resolveView(_ view: Type): AnyStruct? {
+            switch view {
+                case Type<CronJobListView>():
+                    var jobs: {UInt64: CronJobView} = {}
+                    for jobId in self.jobs.keys {
+                        let jobRef = &self.jobs[jobId] as &CronJob?
+                        if jobRef != nil {
+                            // Get job info using the job's ViewResolver
+                            let jobInfo = jobRef!.resolveView(Type<CronJobInfo>()) as! CronJobInfo?
+                            if jobInfo != nil {
+                                jobs[jobId] = CronJobView(
+                                    jobInfo: jobInfo!,
+                                    transactionIds: self.getTransactionIdsForJob(jobId: jobId)
+                                )
+                            }
+                        }
+                    }
+                    return CronJobListView(jobs: jobs)
+            }
             return nil
         }
-    }
 
-    /// Schedule a cron job using the user's CallbackManager
-    /// @param handler: The callback handler to wrap with cron scheduling
-    /// @param callbackManager: User's CallbackManager for managing the scheduled callback
-    /// @param data: Data to pass to the handler on each execution
-    /// @param cronSpec: CronSpec bitmasks defining the schedule
-    /// @param priority: Priority level for execution (High/Medium/Low)
-    /// @param executionEffort: Computational effort required for execution
-    /// @param feeProvider: Capability to withdraw fees for scheduling (fees calculated automatically)
-    access(all) fun scheduleCronJob(
-        handler: Capability<auth(FlowTransactionScheduler.Execute) &{FlowTransactionScheduler.TransactionHandler}>,
-        manager: Capability<auth(FlowTransactionSchedulerUtils.Owner) &FlowTransactionSchedulerUtils.Manager>,
-        data: AnyStruct?,
-        cronSpec: FlowCronParser.CronSpec,
-        priority: FlowTransactionScheduler.Priority,
-        executionEffort: UInt64,
-        feeProvider: Capability<auth(FungibleToken.Withdraw) &FlowToken.Vault>
-    ) {
-        pre {
-            handler.check(): "Handler capability must be valid"
-            manager.check(): "Transaction manager capability must be valid"
-            feeProvider.check(): "Fee provider capability must be valid"
-            executionEffort > 0: "Execution effort must be greater than 0"
-            cronSpec.minMask > 0 && cronSpec.hourMask > 0 && cronSpec.domMask > 0 && cronSpec.monthMask > 0 && cronSpec.dowMask > 0: "CronSpec must have valid bitmasks"
+        /// Internal helper function to schedule a single transaction
+        /// Handles fee estimation, withdrawal, and scheduling
+        access(self) fun scheduleTransaction(
+            jobId: UInt64,
+            context: CronJobContext,
+            timestamp: UFix64,
+        ): UInt64 {
+            // Estimate fees
+            let estimate = FlowTransactionScheduler.estimate(
+                data: context,
+                timestamp: timestamp,
+                priority: context.priority,
+                executionEffort: context.executionEffort
+            )
+            if estimate.flowFee == nil {
+                panic(estimate.error ?? "Failed to estimate transaction fee")
+            }
+            
+            // Borrow fee provider and withdraw fees
+            let feeVault = context.feeProviderCap.borrow()
+                ?? panic("Cannot borrow fee provider capability")
+            let fees <- feeVault.withdraw(amount: estimate.flowFee!)
+            
+            // Borrow scheduler manager and schedule transaction
+            let schedulerManager = context.schedulerManagerCap.borrow()
+                ?? panic("Cannot borrow scheduler manager capability")
+            let transactionId = schedulerManager.schedule(
+                handlerCap: context.cronManagerCap,
+                data: context,
+                timestamp: timestamp,
+                priority: context.priority,
+                executionEffort: context.executionEffort,
+                fees: <-fees as! @FlowToken.Vault
+            )
+            // Update mappings
+            self.transactionToJob[transactionId] = jobId
+            
+            // Always emit event when scheduling a transaction
+            emit CronJobScheduled(
+                jobId: jobId,
+                nextExecution: timestamp
+            )
+            
+            return transactionId
+        }
+    }
+    
+    /// View structure for individual cron job information
+    access(all) struct CronJobInfo {
+        access(all) let id: UInt64
+        access(all) let executionCount: UInt64
+        access(all) let lastExecution: UFix64?
+        access(all) let nextExecution: UFix64?
+        access(all) let futureExecution: UFix64?
+        access(all) let createdAt: UFix64
+        
+        init(
+            id: UInt64,
+            executionCount: UInt64,
+            lastExecution: UFix64?,
+            nextExecution: UFix64?,
+            futureExecution: UFix64?,
+            createdAt: UFix64
+        ) {
+            self.id = id
+            self.executionCount = executionCount
+            self.lastExecution = lastExecution
+            self.nextExecution = nextExecution
+            self.futureExecution = futureExecution
+            self.createdAt = createdAt
+        }
+    }
+    
+    /// Individual cron job resource
+    access(all) resource CronJob: ViewResolver.Resolver {
+
+        // The id of the cron job
+        access(all) let id: UInt64
+        // The cron spec of the cron job
+        access(all) let cronSpec: FlowCronParser.CronSpec
+
+        // Wrapped handler cap is into the cron job to be able to retrieve its data for views
+        // If it was just in context we wouldn't be able to retrieve the data for views
+        access(contract) let wrappedHandlerCap: Capability<auth(FlowTransactionScheduler.Execute) &{FlowTransactionScheduler.TransactionHandler}>
+        
+        // The timestamp of the creation of the cron job
+        access(all) let createdAt: UFix64
+        
+        // The number of times the cron job has been executed
+        access(all) var executionCount: UInt64
+
+        // The timestamp of the last execution
+        access(all) var lastExecution: UFix64?
+        // The timestamp of the next execution
+        access(all) var nextExecution: UFix64?
+        // The timestamp of the future execution
+        access(all) var futureExecution: UFix64?
+        
+        init(
+            id: UInt64,
+            cronSpec: FlowCronParser.CronSpec,
+            wrappedHandlerCap: Capability<auth(FlowTransactionScheduler.Execute) &{FlowTransactionScheduler.TransactionHandler}>,
+            createdAt: UFix64
+        ) {
+            self.id = id
+            self.cronSpec = cronSpec
+            self.wrappedHandlerCap = wrappedHandlerCap
+            self.createdAt = createdAt
+            self.executionCount = 0
+            self.lastExecution = nil
+            self.nextExecution = nil
+            self.futureExecution = nil
         }
         
-        // Create cron configuration
-        let cronConfig = CronJobConfig(
-            handler: handler,
-            manager: manager,
-            data: data,
-            cronSpec: cronSpec,
-            priority: priority,
-            executionEffort: executionEffort,
-            feeProvider: feeProvider
-        )
-        
-        // Use Manager for scheduling
-        let userManager = manager.borrow()
-            ?? panic("Cannot borrow transaction manager capability")
-        
-        // Calculate and schedule first execution using internal helper
-        let currentTime = UInt64(getCurrentBlock().timestamp)
-        let nextTimeUFix64 = self.internalSchedule(
-            config: cronConfig,
-            afterUnix: currentTime,
-            manager: userManager
-        ) ?? panic("Cannot find next execution time within horizon")
-        
-    }
-
-    /// Calculate next execution time for a cron spec
-    /// @param cronSpec: CronSpec bitmasks defining the schedule
-    /// @param from: Starting timestamp
-    /// @return: Next valid execution timestamp, or nil if none found within horizon
-    access(all) fun getNextExecutionTime(cronSpec: FlowCronParser.CronSpec, from: UFix64): UFix64? {
-        let fromUnix = UInt64(from)
-        if let nextUnix = FlowCronParser.nextTick(spec: cronSpec, afterUnix: fromUnix) {
-            return UFix64(nextUnix)
-        }
-        return nil
-    }
-
-    /// Parse a cron expression string into CronSpec bitmasks
-    /// @param expression: Cron expression string (e.g., "0 2 * * *")
-    /// @return: CronSpec or nil if invalid
-    access(all) fun parseCronExpression(expression: String): FlowCronParser.CronSpec? {
-        return FlowCronParser.parse(expression: expression)
-    }
-
-    /// Internal helper function for scheduling transactions with common logic
-    /// Used by both initial scheduling and rescheduling to ensure consistent behavior
-    /// @param config: CronJobConfig containing all scheduling parameters
-    /// @param afterUnix: Calculate next execution time after this timestamp
-    /// @param manager: Manager to use for scheduling
-    /// @return: Next execution timestamp, or nil if no valid time found
-    access(self) fun internalSchedule(
-        config: CronJobConfig,
-        afterUnix: UInt64,
-        manager: auth(FlowTransactionSchedulerUtils.Owner) &FlowTransactionSchedulerUtils.Manager
-    ): UFix64? {
-        // Calculate next execution time
-        let nextTime = FlowCronParser.nextTick(spec: config.cronSpec, afterUnix: afterUnix)
-        if nextTime == nil { return nil }
-        
-        // Use FlowTransactionScheduler.estimate() to calculate exact fee needed
-        let estimate = FlowTransactionScheduler.estimate(
-            data: config,
-            timestamp: UFix64(nextTime!),
-            priority: config.priority,
-            executionEffort: config.executionEffort
-        )
-        
-        // Check if estimation failed
-        if estimate.flowFee == nil {
-            panic(estimate.error ?? "Failed to estimate transaction fee")
+        /// Execute the wrapped handler
+        access(contract) fun executeJob(id: UInt64, data: AnyStruct?) {
+            let wrappedHandler = self.wrappedHandlerCap.borrow()
+                ?? panic("Cannot borrow handler capability")
+            
+            // Execute the wrapped handler with the same data as it would receive if it was executed directly
+            wrappedHandler.executeTransaction(id: id, data: data)
+            
+            // Here we just update state stats or data
+            self.executionCount = self.executionCount + 1
         }
         
-        // Get fees for execution using calculated amount
-        let feeVault = config.feeProvider.borrow()
-            ?? panic("Cannot borrow fee provider capability")
-        let fees <- feeVault.withdraw(amount: estimate.flowFee!)
+        /// ViewResolver implementation
+        access(all) view fun getViews(): [Type] {
+            var allViews: [Type] = [Type<CronJobInfo>()] // job's own views
+            
+            // Add wrapped handler views
+            if let handler = self.wrappedHandlerCap.borrow() {
+                allViews = allViews.concat(handler.getViews())
+            }
+            
+            return allViews
+        }
         
-        // Schedule using Manager with shared CronManager capability
-        manager.schedule(
-            handlerCap: FlowCron.sharedCronManager,
-            data: config,
-            timestamp: UFix64(nextTime!),
-            priority: config.priority,
-            executionEffort: config.executionEffort,
-            fees: <-fees as! @FlowToken.Vault
-        )
+        access(all) fun resolveView(_ view: Type): AnyStruct? {
+            switch view {
+                case Type<CronJobInfo>():
+                    return CronJobInfo(
+                        id: self.id,
+                        executionCount: self.executionCount,
+                        lastExecution: self.lastExecution,
+                        nextExecution: self.nextExecution,
+                        futureExecution: self.futureExecution,
+                        createdAt: self.createdAt
+                    )
+            }
+            
+            // Try wrapped handler views
+            if let handler = self.wrappedHandlerCap.borrow() {
+                return handler.resolveView(view)
+            }
+            
+            return nil
+        }
         
-        return UFix64(nextTime!)
+        /// Set execution time for last, next and future execution
+        access(contract) fun setExecutionTime(lastExecution: UFix64?, nextExecution: UFix64?, futureExecution: UFix64?) {
+            self.lastExecution = lastExecution
+            self.nextExecution = nextExecution
+            self.futureExecution = futureExecution
+        }
     }
-
-    /// Contract initialization - creates centralized CronManager 
+    
+    /// Context passed with each execution for rescheduling
+    // It contains all the necessary information to execute the cron job and to reschedule it
+    // This data is unaccessible and it's just what is needed to execute and reschedule the cron job
+    access(all) struct CronJobContext {
+        access(all) let jobId: UInt64
+        access(all) let cronSpec: FlowCronParser.CronSpec
+        access(all) let cronManagerCap: Capability<auth(FlowTransactionScheduler.Execute) &{FlowTransactionScheduler.TransactionHandler}>
+        access(all) let schedulerManagerCap: Capability<auth(FlowTransactionSchedulerUtils.Owner) &FlowTransactionSchedulerUtils.Manager>
+        access(all) let feeProviderCap: Capability<auth(FungibleToken.Withdraw) &FlowToken.Vault>
+        access(all) let data: AnyStruct?
+        access(all) let priority: FlowTransactionScheduler.Priority
+        access(all) let executionEffort: UInt64
+        
+        init(
+            jobId: UInt64,
+            cronSpec: FlowCronParser.CronSpec,
+            cronManagerCap: Capability<auth(FlowTransactionScheduler.Execute) &{FlowTransactionScheduler.TransactionHandler}>,
+            schedulerManagerCap: Capability<auth(FlowTransactionSchedulerUtils.Owner) &FlowTransactionSchedulerUtils.Manager>,
+            feeProviderCap: Capability<auth(FungibleToken.Withdraw) &FlowToken.Vault>,
+            data: AnyStruct?,
+            priority: FlowTransactionScheduler.Priority,
+            executionEffort: UInt64
+        ) {
+            self.jobId = jobId
+            self.cronSpec = cronSpec
+            self.cronManagerCap = cronManagerCap
+            self.schedulerManagerCap = schedulerManagerCap
+            self.feeProviderCap = feeProviderCap
+            self.data = data
+            self.priority = priority
+            self.executionEffort = executionEffort
+        }
+    }
+    
+    /// View structures
+    access(all) struct CronJobView {
+        access(all) let jobInfo: CronJobInfo
+        access(all) let transactionIds: [UInt64]
+        
+        init(
+            jobInfo: CronJobInfo,
+            transactionIds: [UInt64]
+        ) {
+            self.jobInfo = jobInfo
+            self.transactionIds = transactionIds
+        }
+    }
+    
+    access(all) struct CronJobListView {
+        access(all) let jobs: {UInt64: CronJobView}
+        
+        init(jobs: {UInt64: CronJobView}) {
+            self.jobs = jobs
+        }
+    }
+    
+    /// Create a new CronManager instance
+    access(all) fun createManager(): @CronManager {
+        return <-create CronManager()
+    }
+    
     init() {
-        // Initialize storage path
-        self.storagePath = /storage/flowCronManager
-        
-        // Create and store the centralized CronManager
-        let cronManager <- create CronManager(
-            name: "FlowCron Manager",
-            description: "Centralized manager for all cron jobs"
-        )
-        self.account.storage.save(<-cronManager, to: self.storagePath)
-        
-        // Issue and store the shared capability
-        self.sharedCronManager = self.account.capabilities.storage.issue<
-            auth(FlowTransactionScheduler.Execute) &{FlowTransactionScheduler.TransactionHandler}
-        >(self.storagePath)
+        self.CronManagerStoragePath = /storage/flowCronManager
+        self.CronManagerPublicPath = /public/flowCronManager
     }
 }
