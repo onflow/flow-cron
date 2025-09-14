@@ -8,9 +8,9 @@ import "ViewResolver"
 /// FlowCron: A utility for scheduling recurring transactions using cron expressions.
 access(all) contract FlowCron {
     
-    /// Storage and public paths for CronManager resources
-    access(all) let CronManagerStoragePath: StoragePath
-    access(all) let CronManagerPublicPath: PublicPath
+    /// Storage and public paths for CronHandler resources
+    access(all) let CronHandlerStoragePath: StoragePath
+    access(all) let CronHandlerPublicPath: PublicPath
     
     /// Entitlements
     access(all) entitlement Owner
@@ -20,8 +20,8 @@ access(all) contract FlowCron {
     access(all) event CronJobExecuted(jobId: UInt64, executionCount: UInt64)
     access(all) event CronJobCancelled(jobId: UInt64)
     
-    /// CronManager resource that manages cron jobs for a user
-    access(all) resource CronManager: FlowTransactionScheduler.TransactionHandler, ViewResolver.Resolver {
+    /// CronHandler resource that manages cron jobs for a user
+    access(all) resource CronHandler: FlowTransactionScheduler.TransactionHandler, ViewResolver.Resolver {
         
         /// Dictionary of cron jobs
         access(self) var jobs: @{UInt64: CronJob}
@@ -42,7 +42,7 @@ access(all) contract FlowCron {
         /// Method for scheduling cron jobs with all capabilities
         access(Owner) fun scheduleJob(
             cronSpec: FlowCronParser.CronSpec,
-            cronManagerCap: Capability<auth(FlowTransactionScheduler.Execute) &{FlowTransactionScheduler.TransactionHandler}>,
+            cronHandlerCap: Capability<auth(FlowTransactionScheduler.Execute) &{FlowTransactionScheduler.TransactionHandler}>,
             wrappedHandlerCap: Capability<auth(FlowTransactionScheduler.Execute) &{FlowTransactionScheduler.TransactionHandler}>,
             schedulerManagerCap: Capability<auth(FlowTransactionSchedulerUtils.Owner) &FlowTransactionSchedulerUtils.Manager>,
             feeProviderCap: Capability<auth(FungibleToken.Withdraw) &FlowToken.Vault>,
@@ -50,11 +50,11 @@ access(all) contract FlowCron {
             priority: FlowTransactionScheduler.Priority,
             executionEffort: UInt64
         ): UInt64 {
-            // Verify the cronManager capability belongs to this account exactly
-            // This is enough because there could be only one cron manager per account
+            // Verify the cronHandler capability belongs to this account exactly
+            // This is enough because there could be only one cron handler per account
             assert(
-                cronManagerCap.address == self.owner?.address,
-                message: "The cronManager capability must belong to this CronManager's owner"
+                cronHandlerCap.address == self.owner?.address,
+                message: "The cronHandler capability must belong to this CronHandler's owner"
             )
 
             // Clean up completed or invalid jobs
@@ -78,7 +78,7 @@ access(all) contract FlowCron {
             let context = CronJobContext(
                 jobId: jobId,
                 cronSpec: cronSpec,
-                cronManagerCap: cronManagerCap,
+                cronHandlerCap: cronHandlerCap,
                 schedulerManagerCap: schedulerManagerCap,
                 feeProviderCap: feeProviderCap,
                 data: data,
@@ -306,7 +306,7 @@ access(all) contract FlowCron {
             let schedulerManager = context.schedulerManagerCap.borrow()
                 ?? panic("Cannot borrow scheduler manager capability")
             let transactionId = schedulerManager.schedule(
-                handlerCap: context.cronManagerCap,
+                handlerCap: context.cronHandlerCap,
                 data: context,
                 timestamp: timestamp,
                 priority: context.priority,
@@ -452,7 +452,7 @@ access(all) contract FlowCron {
     access(all) struct CronJobContext {
         access(all) let jobId: UInt64
         access(all) let cronSpec: FlowCronParser.CronSpec
-        access(all) let cronManagerCap: Capability<auth(FlowTransactionScheduler.Execute) &{FlowTransactionScheduler.TransactionHandler}>
+        access(all) let cronHandlerCap: Capability<auth(FlowTransactionScheduler.Execute) &{FlowTransactionScheduler.TransactionHandler}>
         access(all) let schedulerManagerCap: Capability<auth(FlowTransactionSchedulerUtils.Owner) &FlowTransactionSchedulerUtils.Manager>
         access(all) let feeProviderCap: Capability<auth(FungibleToken.Withdraw) &FlowToken.Vault>
         access(all) let data: AnyStruct?
@@ -462,7 +462,7 @@ access(all) contract FlowCron {
         init(
             jobId: UInt64,
             cronSpec: FlowCronParser.CronSpec,
-            cronManagerCap: Capability<auth(FlowTransactionScheduler.Execute) &{FlowTransactionScheduler.TransactionHandler}>,
+            cronHandlerCap: Capability<auth(FlowTransactionScheduler.Execute) &{FlowTransactionScheduler.TransactionHandler}>,
             schedulerManagerCap: Capability<auth(FlowTransactionSchedulerUtils.Owner) &FlowTransactionSchedulerUtils.Manager>,
             feeProviderCap: Capability<auth(FungibleToken.Withdraw) &FlowToken.Vault>,
             data: AnyStruct?,
@@ -471,7 +471,7 @@ access(all) contract FlowCron {
         ) {
             self.jobId = jobId
             self.cronSpec = cronSpec
-            self.cronManagerCap = cronManagerCap
+            self.cronHandlerCap = cronHandlerCap
             self.schedulerManagerCap = schedulerManagerCap
             self.feeProviderCap = feeProviderCap
             self.data = data
@@ -502,13 +502,13 @@ access(all) contract FlowCron {
         }
     }
     
-    /// Create a new CronManager instance
-    access(all) fun createManager(): @CronManager {
-        return <-create CronManager()
+    /// Create a new CronHandler instance
+    access(all) fun createHandler(): @CronHandler {
+        return <-create CronHandler()
     }
     
     init() {
-        self.CronManagerStoragePath = /storage/flowCronManager
-        self.CronManagerPublicPath = /public/flowCronManager
+        self.CronHandlerStoragePath = /storage/flowCronHandler
+        self.CronHandlerPublicPath = /public/flowCronHandler
     }
 }
