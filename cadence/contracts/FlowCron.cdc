@@ -240,7 +240,7 @@ access(all) contract FlowCron {
         }
         
         /// Get all transaction IDs for a specific job
-        access(all) fun getTransactionIdsForJob(jobId: UInt64): [UInt64] {
+        access(all) fun getJobTransactionIds(jobId: UInt64): [UInt64] {
             var transactionIds: [UInt64] = []
             for transactionId in self.transactionToJob.keys {
                 if self.transactionToJob[transactionId] == jobId {
@@ -269,7 +269,7 @@ access(all) contract FlowCron {
                             if jobInfo != nil {
                                 jobs[jobId] = CronJobView(
                                     jobInfo: jobInfo!,
-                                    transactionIds: self.getTransactionIdsForJob(jobId: jobId)
+                                    transactionIds: self.getJobTransactionIds(jobId: jobId)
                                 )
                             }
                         }

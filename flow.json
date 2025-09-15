@@ -13,7 +13,7 @@
       }
     },
     "Counter": {
-      "source": "cadence/contracts/Counter.cdc",
+      "source": "examples/counter/contracts/Counter.cdc",
       "aliases": {
         "testing": "0000000000000007"
       }
