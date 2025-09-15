@@ -835,7 +835,7 @@ access(all) contract FlowTransactionScheduler {
 
             if scheduledTimestamp == nil {
                 return EstimatedScheduledTransaction(
-                            flowFee: fee,
+                            flowFee: nil,
                             timestamp: nil,
                             error: "Invalid execution effort: \(executionEffort) is greater than the priority's available effort for the requested timestamp."
                         )
@@ -1306,7 +1306,7 @@ access(all) contract FlowTransactionScheduler {
                 priority: tx.priority.rawValue,
                 executionEffort: tx.executionEffort,
                 transactionHandlerOwner: tx.handler.address,
-                transactionHandlerTypeIdentifier: tx.handlerTypeIdentifier
+                transactionHandlerTypeIdentifier: transactionHandler.getType().identifier
             )
             
             transactionHandler.executeTransaction(id: id, data: tx.getData())
@@ -1430,6 +1430,8 @@ access(all) contract FlowTransactionScheduler {
     access(all) init() {
         self.storagePath = /storage/sharedScheduler
         let scheduler <- create SharedScheduler()
+        let oldScheduler <- self.account.storage.load<@AnyResource>(from: self.storagePath)
+        destroy oldScheduler
         self.account.storage.save(<-scheduler, to: self.storagePath)
         
         self.sharedScheduler = self.account.capabilities.storage
