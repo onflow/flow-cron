@@ -1,343 +1,354 @@
-# 👋 Welcome to the Scheduled Callbacks Scaffold
+# FlowCron - Cron Job Scheduling on Flow
 
-This project is a starting point for you to test out Scheduled Callbacks on the Flow Blockchain. It comes with example contracts, scripts, transactions, and tests to help you get started.
+FlowCron is a smart contract system that brings the power of cron job scheduling to the Flow blockchain. It enables autonomous, recurring transaction execution without external triggers, allowing smart contracts to "wake up" and execute logic at predefined times using familiar cron expressions.
 
-## What are Scheduled Callbacks?
+## Table of Contents
 
-Scheduled Callbacks let smart contracts execute code at (or after) a chosen time without an external transaction. You schedule work now; the network executes it later. This enables recurring jobs, deferred actions, and autonomous workflows.
+- [Overview](#overview)
+- [Architecture](#architecture)
+- [Core Components](#core-components)
+- [How It Works](#how-it-works)
+- [Usage Guide](#usage-guide)
+- [FlowCronUtils - The Cron Expression Engine](#flowcronutils---the-cron-expression-engine)
+- [Transaction Reference](#transaction-reference)
+- [Script Reference](#script-reference)
+- [Best Practices](#best-practices)
+- [Examples](#examples)
 
-Core pieces:
+## Overview
 
-- Capability to a handler implementing `FlowCallbackScheduler.CallbackHandler`
-- Parameters: `timestamp`, `priority`, `executionEffort`, `fees`, optional `callbackData`
-- Estimate first (`FlowCallbackScheduler.estimate`), then schedule (`FlowCallbackScheduler.schedule`)
+FlowCron leverages Flow's native transaction scheduling capabilities (FLIP-330) to implement recurring executions. Unlike traditional cron systems that require external schedulers, FlowCron operates entirely on-chain, ensuring decentralization and reliability.
 
-## 🔨 Getting Started
+### Key Features
 
-Here are some essential resources to help you hit the ground running:
+- **Standard Cron Syntax**: Uses familiar 5-field cron expressions (minute, hour, day-of-month, month, day-of-week)
+- **Self-Perpetuating**: Jobs automatically reschedule themselves after each execution
+- **Fault Tolerant**: Double-buffering pattern ensures continuity even if an execution fails
+- **Flexible Priority**: Support for High, Medium, and Low priority executions
+- **Cost Efficient**: Optimized bitmask operations minimize computation and storage
+- **View Resolver Integration**: Full support for querying job states and custom handler data
 
-- **[Flow Documentation](https://developers.flow.com/)** - The official Flow Documentation is a great starting point to start learning about about [building](https://developers.flow.com/build/flow) on Flow.
-- **[Cadence Documentation](https://cadence-lang.org/docs/language)** - Cadence is the native language for the Flow Blockchain. It is a resource-oriented programming language that is designed for developing smart contracts.  The documentation is a great place to start learning about the language.
-- **[Visual Studio Code](https://code.visualstudio.com/)** and the **[Cadence Extension](https://marketplace.visualstudio.com/items?itemName=onflow.cadence)** - It is recommended to use the Visual Studio Code IDE with the Cadence extension installed.  This will provide syntax highlighting, code completion, and other features to support Cadence development.
-- **[Flow Clients](https://developers.flow.com/tools/clients)** - There are clients available in multiple languages to interact with the Flow Blockchain.  You can use these clients to interact with your smart contracts, run transactions, and query data from the network.
-- **[Block Explorers](https://developers.flow.com/ecosystem/block-explorers)** - Block explorers are tools that allow you to explore on-chain data.  You can use them to view transactions, accounts, events, and other information.  [Flowser](https://flowser.dev/) is a powerful block explorer for local development on the Flow Emulator.
+## Architecture
 
-## ▶️ Quick Start (CounterCronJob Example - Recommended)
+### System Overview
 
-Follow this to run the advanced demo that showcases multiple concurrent cron jobs using the CounterCronJob pattern with automatic job ID generation and individual fee management.
-
-1) Ensure flow-cli 2.4.1
-
-```bash
-flow version
-# If older than 2.4.1, update first: https://developers.flow.com/tools/flow-cli/install
+```
++----------------------------------------------------------+
+|                    User Account                          |
++----------------------------------------------------------+
+|                                                          |
+|  +-----------------+    +---------------------------+    |
+|  |  CronHandler    |--->|      CronJob #1           |    |
+|  |                 |    |  - cronSpec               |    |
+|  |  - jobs         |    |  - wrappedHandlerCap      |    |
+|  |  - nextJobId    |    |  - executionCount         |    |
+|  |                 |    +---------------------------+    |
+|  |                 |                                     |
+|  |                 |    +---------------------------+    |
+|  |                 |--->|      CronJob #2           |    |
+|  |                 |    +---------------------------+    |
+|  +-----------------+                                     |
+|           |                                              |
+|           v                                              |
+|  +---------------------------------------------------+   |
+|  |     TransactionSchedulerUtils.Manager             |   |
+|  |  - Manages scheduled transactions                 |   |
+|  +---------------------------------------------------+   |
+|                                                          |
+|  +---------------------------------------------------+   |
+|  |         Custom Handler (User's)                   |   |
+|  |  - Implements TransactionHandler                  |   |
+|  |  - Contains actual job logic                      |   |
+|  +---------------------------------------------------+   |
++----------------------------------------------------------+
 ```
 
-2) Create `emulator-account.pkey`
+### Core Design Principles
 
-- Generate a key pair and copy the private key hex
+1. **Resource Ownership**: Each account owns its CronHandler resource, ensuring complete control over scheduled jobs
+2. **Double-Buffer Pattern**: Two transactions are always scheduled (next and future) to ensure continuity
+3. **Atomic Rescheduling**: New executions are scheduled before current execution completes
 
-```bash
-flow keys generate
-# Copy the "Private Key" value from the output (hex string)
-```
+## Core Components
 
-- Save the private key to `emulator-account.pkey` in the project root
+### CronHandler Resource
 
-```bash
-printf "<PASTE_PRIVATE_KEY_HEX_HERE>" > emulator-account.pkey
-```
-
-3) Install deps and start emulator
-
-```bash
-flow deps install
-flow emulator --scheduled-callbacks --block-time 1s
-```
-
-4) In a new terminal, deploy and test
-
-```bash
-flow project deploy --network emulator
-
-# Check initial counter
-flow scripts execute cadence/scripts/GetCounter.cdc --network emulator
-
-# Create first job (3 seconds, 3 times)
-flow transactions send cadence/transactions/CreateAndScheduleCounterCronJob.cdc \
-  --network emulator --signer emulator-account \
-  --args-json '[{"type":"UFix64","value":"3.0"},{"type":"Optional","value":{"type":"UInt64","value":"3"}},{"type":"Optional","value":null}]'
-
-# Create second job (2 seconds, 2 times) for concurrent execution
-flow transactions send cadence/transactions/CreateAndScheduleCounterCronJob.cdc \
-  --network emulator --signer emulator-account \
-  --args-json '[{"type":"UFix64","value":"2.0"},{"type":"Optional","value":{"type":"UInt64","value":"2"}},{"type":"Optional","value":null}]'
-
-# Wait and verify (3 + 2 = 5 total increments)
-sleep 10
-flow scripts execute cadence/scripts/GetCounter.cdc --network emulator
-```
-
-For full details including monitoring, cleanup, and real-world scenarios, see `COUNTERCRONJOB-EXAMPLE.md`.
-
-## ▶️ Quick Start (Simple Callback Example)
-
-For a simpler single-purpose callback example using the direct CounterCronCallbackHandler pattern:
-
-Repeat steps 1–3 above, then in a new terminal run:
-
-```bash
-flow project deploy --network emulator
-
-flow transactions send cadence/transactions/InitCounterCronCallbackHandler.cdc \
-  --network emulator --signer emulator-account
-
-flow scripts execute cadence/scripts/GetCounter.cdc --network emulator
-
-flow transactions send cadence/transactions/ScheduleIncrementInCron.cdc \
-  --network emulator --signer emulator-account \
-  --args-json '[
-    {"type":"UFix64","value":"3.0"},
-    {"type":"UInt8","value":"1"},
-    {"type":"UInt64","value":"1000"},
-    {"type":"Optional","value":{"type":"UInt64","value":"3"}},
-    {"type":"Optional","value":null}
-  ]'
-
-# after ~12s, check that it ran exactly 3 times at precise 3-second intervals
-flow scripts execute cadence/scripts/GetCounter.cdc --network emulator
-```
-
-## 📦 Project Structure
-
-Your project has been set up with the following structure:
-
-- `flow.json` – Project configuration and dependency aliases (string-imports)
-- `/cadence` – Your Cadence code
-- `/core-contracts` – Local copies of core contracts used by the emulator for linting and string-imports
-- `/.cursor/rules/scheduledcallbacks` – Local documentation and agent guidance (index, FLIP, workflows)
-
-Inside the `cadence` folder you will find:
-
-- `/contracts` - This folder contains your Cadence contracts (these are deployed to the network and contain the business logic for your application)
-  - `Counter.cdc` - Simple counter state contract
-  - `CronJobScheduler.cdc` - Generic cron job scheduling framework
-  - `CounterCronJob.cdc` - Counter-specific cron job implementation (recommended pattern)
-  - `CounterCronCallbackHandler.cdc` - Direct callback handler for simple use cases
-- `/scripts` - This folder contains your Cadence scripts (read-only operations)
-  - `GetCounter.cdc` - Read the current counter value
-  - `CheckCounterCronJob.cdc` - Check if a cron job exists
-  - `GetCounterCronJobInfo.cdc` - Get detailed cron job information
-- `/transactions` - This folder contains your Cadence transactions (state-changing operations)
-  - `IncrementCounter.cdc` - Manually increment the counter
-  - `InitCounterCronCallbackHandler.cdc` - Initialize simple callback handler
-  - `ScheduleIncrementInCron.cdc` - Schedule with simple callback handler
-  - `CreateAndScheduleCounterCronJob.cdc` - One-step cron job creation (recommended)
-  - `InitCounterCronJob.cdc` - Two-step: Initialize cron job
-  - `ScheduleCounterCronJob.cdc` - Two-step: Schedule existing cron job
-  - `RemoveCounterCronJob.cdc` - Clean up completed cron jobs
-- `/tests` - This folder contains your Cadence tests (integration tests for your contracts, scripts, and transactions to verify they behave as expected)
-  - `Counter_test.cdc`
-
-Inside the `/core-contracts` folder you will find:
-
-- `FlowCallbackScheduler.cdc` – The core Scheduled Callbacks contract used by emulator
-- `FlowToken.cdc`, `FlowFees.cdc`, `FlowStorageFees.cdc` – Core contracts to support fee and storage calculations
-
-Docs and rules live under `/.cursor/rules/scheduledcallbacks`:
-
-- `index.md` – Navigation and references
-- `agent-rules.mdc` – Agent guidance for composing safe callback transactions
-- `quick-checklist.md` – Essential checklist
-- `flip.md` – FLIP-330: Scheduled Callbacks
-- `workflows/` – Step-by-step: handler + scheduling flows
-
-Other folders/files:
-
-- `COUNTERCRONJOB-EXAMPLE.md` – Comprehensive guide for the CounterCronJob pattern with multiple concurrent jobs, monitoring, and real-world scenarios (recommended)
-
-## 👨‍💻 Start Developing
-
-### Create `emulator-account.pkey` (required)
-
-If your `flow.json` references a key file for the `emulator-account`, create one and run the emulator with that same key so signing matches the service account. This is required; starting the emulator without the same private key will cause deploys/signing to fail.
-
-1) Generate a key pair and copy the private key hex
-
-```bash
-flow keys generate --sig-algo ECDSA_P256 --hash-algo SHA3_256
-# Copy the "Private Key" value from the output (hex string)
-```
-
-2) Save the private key to `emulator-account.pkey` in the project root
-
-```bash
-printf "<PASTE_PRIVATE_KEY_HEX_HERE>" > emulator-account.pkey
-```
-
-### Creating a New Contract
-
-To add a new contract to your project, run the following command:
-
-```shell
-flow generate contract
-```
-
-This command will create a new contract file and add it to the `flow.json` configuration file.
-
-### Creating a New Script
-
-To add a new script to your project, run the following command:
-
-```shell
-flow generate script
-```
-
-This command will create a new script file.  Scripts are used to read data from the blockchain and do not modify state (i.e. get the current balance of an account, get a user's NFTs, etc).
-
-You can import any of your own contracts or installed dependencies in your script file using the `import` keyword.  For example:
+The main resource that manages all cron jobs for an account:
 
 ```cadence
-import "Counter"
+access(all) resource CronHandler: FlowTransactionScheduler.TransactionHandler, ViewResolver.Resolver {
+    access(self) var jobs: @{UInt64: CronJob}
+    access(contract) var nextJobId: UInt64
+    access(self) var transactionToJob: {UInt64: UInt64}
+}
 ```
 
-### Creating a New Transaction
+**Key Responsibilities:**
 
-To add a new transaction to your project you can use the following command:
+- Creates and manages CronJob resources
+- Implements the TransactionHandler interface for execution
+- Maintains transaction-to-job mappings
+- Handles cleanup of completed jobs
 
-```shell
-flow generate transaction
-```
+### CronJob Resource
 
-This command will create a new transaction file.  Transactions are used to modify the state of the blockchain (i.e purchase an NFT, transfer tokens, etc).
-
-You can import any dependencies as you would in a script file.
-
-## ⏰ Scheduled Callbacks – Quick Reference
-
-- Imports (string imports): `import "FlowCallbackScheduler"`, `import "FlowToken"`, `import "FungibleToken"`
-- Required params when scheduling:
-  - `timestamp: UFix64` (must be in the future; on emulator prefer `getCurrentBlock().timestamp + smallDelta`)
-  - `priority: UInt8` (0 = High, 1 = Medium, 2 = Low)
-  - `executionEffort: UInt64` (minimum 10)
-  - `handlerStoragePath: StoragePath`
-  - `callbackData: AnyStruct?` (<= 100 bytes)
-- Flow: Estimate → withdraw fees → issue handler capability → schedule → optionally save the `ScheduledCallback` receipt.
-
-Minimal scheduling skeleton:
+Individual cron job containing scheduling information and execution state:
 
 ```cadence
-import "FlowToken"
-import "FungibleToken"
-import "FlowCallbackScheduler"
+access(all) resource CronJob: ViewResolver.Resolver {
+    access(all) let id: UInt64
+    access(all) let cronSpec: FlowCronUtils.CronSpec
+    access(contract) let wrappedHandlerCap: Capability<...>
+    access(all) var executionCount: UInt64
+    access(all) var lastExecution: UFix64?
+    access(all) var nextExecution: UFix64?
+    access(all) var futureExecution: UFix64?
+}
+```
 
-transaction(
-    timestamp: UFix64,
-    priority: UInt8,
-    executionEffort: UInt64,
-    handlerStoragePath: StoragePath,
-    callbackData: AnyStruct?
-) {
-    prepare(signer: auth(Storage, Capabilities) &Account) {
-        let p = priority == 0
-            ? FlowCallbackScheduler.Priority.High
-            : priority == 1
-                ? FlowCallbackScheduler.Priority.Medium
-                : FlowCallbackScheduler.Priority.Low
+### CronJobContext Struct
 
-        let est = FlowCallbackScheduler.estimate(
-            data: callbackData,
-            timestamp: timestamp,
-            priority: p,
-            executionEffort: executionEffort
-        )
+Immutable context passed with each execution containing all necessary information for rescheduling:
 
-        assert(
-            est.timestamp != nil || p == FlowCallbackScheduler.Priority.Low,
-            message: est.error ?? "estimation failed"
-        )
+```cadence
+access(all) struct CronJobContext {
+    access(all) let jobId: UInt64
+    access(all) let cronSpec: FlowCronUtils.CronSpec
+    access(all) let cronHandlerCap: Capability<...>
+    access(all) let schedulerManagerCap: Capability<...>
+    access(all) let feeProviderCap: Capability<...>
+    access(all) let data: AnyStruct?
+    access(all) let priority: FlowTransactionScheduler.Priority
+    access(all) let executionEffort: UInt64
+}
+```
 
-        let vaultRef = signer.storage
-            .borrow<auth(FungibleToken.Withdraw) &FlowToken.Vault>(from: /storage/flowTokenVault)
-            ?? panic("missing FlowToken vault")
-        let fees <- vaultRef.withdraw(amount: est.flowFee ?? 0.0) as! @FlowToken.Vault
+## How It Works
 
-        let handlerCap = signer.capabilities.storage
-            .issue<auth(FlowCallbackScheduler.Execute) &{FlowCallbackScheduler.CallbackHandler}>(handlerStoragePath)
+### Job Scheduling Flow
 
-        let receipt = FlowCallbackScheduler.schedule(
-            callback: handlerCap,
-            data: callbackData,
-            timestamp: timestamp,
-            priority: p,
-            executionEffort: executionEffort,
-            fees: <-fees
-        )
-        // Optionally store or log receipt.id
+1. **User Creates Handler**: Implements TransactionHandler interface with custom logic
+2. **Schedule Job**: Calls `scheduleJob` with cron expression and handler capability
+3. **Initial Scheduling**: System schedules two transactions (next and future execution)
+4. **Execution**: When timestamp arrives, `executeTransaction` is called
+5. **Rescheduling**: Before executing user code, system schedules the next future execution
+6. **User Logic**: Wrapped handler executes with provided data
+7. **Repeat**: Process continues indefinitely until cancelled
+
+### Execution Sequence
+
+```
+Time ----------->
+     |
+     +-- Schedule Job
+     |   +-- Create CronJob resource
+     |   +-- Schedule transaction at T1 (next)
+     |   +-- Schedule transaction at T2 (future)
+     |
+     +-- T1 arrives: Execute
+     |   +-- Schedule transaction at T3 (new future)
+     |   +-- Update state (T1->last, T2->next, T3->future)
+     |   +-- Execute user handler
+     |
+     +-- T2 arrives: Execute
+     |   +-- Schedule transaction at T4 (new future)
+     |   +-- Update state (T2->last, T3->next, T4->future)
+     |   +-- Execute user handler
+     |
+     +-- ... continues
+```
+
+## Usage Guide
+
+### 1. Create Your Custom Handler
+
+First, you need a transaction handler to be executed recurringly, so create a new one implementing the TransactionHandler interface or use third party ones:
+
+```cadence
+import "FlowTransactionScheduler"
+
+access(all) contract MyHandler {
+    access(all) resource Handler: FlowTransactionScheduler.TransactionHandler {
+        access(FlowTransactionScheduler.Execute) 
+        fun executeTransaction(id: UInt64, data: AnyStruct?) {
+            // Your custom logic here
+            log("Executing scheduled task with data: ".concat(data.toString()))
+        }
+    }
+    
+    access(all) fun createHandler(): @Handler {
+        return <-create Handler()
     }
 }
 ```
 
-### 📦 Installing External Dependencies
+### 2. Setup and Save Handler
 
-If you want to use external contract dependencies (such as NonFungibleToken, FlowToken, FungibleToken, etc.) you can install them using [Flow CLI Dependency Manager](https://developers.flow.com/tools/flow-cli/dependency-manager).
+```cadence
+import "MyHandler"
 
-For example, to install the NonFungibleToken contract you can use the following command:
-
-```shell
-flow deps add mainnet://1d7e57aa55817448.NonFungibleToken
+transaction {
+    prepare(signer: auth(SaveValue) &Account) {
+        let handler <- MyHandler.createHandler()
+        signer.storage.save(<-handler, to: /storage/myHandler)
+    }
+}
 ```
 
-Contracts can be found using [ContractBrowser](https://contractbrowser.com/), but be sure to verify the authenticity before using third-party contracts in your project.
+### 3. Schedule a Cron Job
 
-## 🧪 Testing
+```cadence
+import "FlowCron"
+import "FlowCronUtils"
+import "FlowTransactionScheduler"
+import "FlowTransactionSchedulerUtils"
+import "FlowToken"
+import "FungibleToken"
 
-To verify that your project is working as expected you can run the tests using the following command:
-
-```shell
-flow test
+transaction(
+    cronSpec: FlowCronUtils.CronSpec,
+    wrappedHandlerStoragePath: StoragePath,
+    data: AnyStruct?,
+    priority: FlowTransactionScheduler.Priority,
+    executionEffort: UInt64
+) {
+    prepare(signer: auth(...) &Account) { 
+        // Schedule the job (see ScheduleCronJob.cdc for full implementation)
+    }
+}
 ```
 
-This command will run all tests with the `_test.cdc` suffix (these can be found in the `cadence/tests` folder). You can add more tests here using the `flow generate test` command (or by creating them manually).
+## FlowCronUtils - The Cron Expression Engine
 
-To learn more about testing in Cadence, check out the [Cadence Test Framework Documentation](https://cadence-lang.org/docs/testing-framework).
+FlowCronUtils provides a highly optimized cron expression parser and scheduler using bitmask operations for efficiency.
 
-## 🚀 Deploying Your Project
+### Cron Expression Format
 
-To deploy your project to the Flow network, you must first have a Flow account and have configured your deployment targets in the `flow.json` configuration file.
-
-You can create a new Flow account using the following command:
-
-```shell
-flow accounts create
+Standard 5-field format:
+```
++----------+----------+----------+----------+----------+
+| minute   | hour     | day of   | month    | day of   |
+|          |          | month    |          | week     |
+| (0-59)   | (0-23)   | (1-31)   | (1-12)   | (0-6)    |
+|          |          |          |          | (0=Sun)  |
++----------+----------+----------+----------+----------+
+|    *     |    *     |    *     |    *     |    *     |
++----------+----------+----------+----------+----------+
 ```
 
-Learn more about setting up deployment targets in the [Flow CLI documentation](https://developers.flow.com/tools/flow-cli/deployment/project-contracts).
+### Supported Operators
 
-### Deploying to the Flow Emulator
+- `*` - Wildcard (any value)
+- `,` - List separator (e.g., `1,3,5`)
+- `-` - Range (e.g., `1-5`)
+- `/` - Step values (e.g., `*/5`, `1-30/5`)
 
-To deploy your project to the Flow Emulator, start the emulator with Scheduled Callbacks enabled:
+### Bitmask Implementation
 
-```shell
-flow emulator --scheduled-callbacks --block-time 1s
+FlowCronUtils uses bitmasks for ultra-efficient storage and computation:
+
+```cadence
+access(all) struct CronSpec {
+    access(all) let minMask: UInt64   // bits 0-59 for minutes
+    access(all) let hourMask: UInt32  // bits 0-23 for hours
+    access(all) let domMask: UInt32   // bits 1-31 for days
+    access(all) let monthMask: UInt16 // bits 1-12 for months
+    access(all) let dowMask: UInt8    // bits 0-6 for weekdays
+}
 ```
 
-To deploy your project, run the following command:
+#### Why Bitmasks?
 
-```shell
-flow project deploy --network=emulator
+1. **Space Efficiency**: Entire cron spec fits in ~15 bytes vs hundreds for arrays
+2. **O(1) Checking**: Bit operations are constant time
+3. **Cache Friendly**: All data fits in a single cache line
+4. **Gas Efficient**: Bitwise operations are the cheapest computations
+
+#### Example: "0 9,17 * * 1-5" (9 AM and 5 PM on weekdays)
+
+```
+minMask:   0x0000000000000001  (bit 0 = minute 0)
+hourMask:  0x00020200          (bits 9,17 = hours 9,17)  
+domMask:   0xFFFFFFFE          (all days)
+monthMask: 0x1FFE              (all months)
+dowMask:   0x3E                (bits 1-5 = Mon-Fri)
 ```
 
-This command will start the Flow Emulator and deploy your project to it. You can now interact with your project using the Flow CLI or alternate [client](https://developers.flow.com/tools/clients).
+### Usage Patterns
 
-## 📚 Other Resources
+#### Option 1: Parse On-Chain
 
-- [Cadence Design Patterns](https://cadence-lang.org/docs/design-patterns)
-- [Cadence Anti-Patterns](https://cadence-lang.org/docs/anti-patterns)
-- [Flow Core Contracts](https://developers.flow.com/build/core-contracts)
+```cadence
+// In a script
+import "FlowCronUtils"
 
-## 🤝 Community
+access(all) fun main(expression: String): FlowCronUtils.CronSpec? {
+    return FlowCronUtils.parse(expression: expression)
+}
+```
 
-- [Flow Community Forum](https://forum.flow.com/)
-- [Flow Discord](https://discord.gg/flow)
-- [Flow Twitter](https://x.com/flow_blockchain)
+Then use the result in your transaction:
+
+```cadence
+let cronSpec = FlowCronUtils.parse(expression: "0 9 * * 1-5")
+    ?? panic("Invalid expression")
+```
+
+#### Option 2: Pre-compute Off-Chain
+
+```javascript
+// JavaScript example for computing bitmasks
+function parseCronExpression(expression) {
+    const parts = expression.split(' ');
+    
+    return {
+        minMask: parseField(parts[0], 0, 59),
+        hourMask: parseField(parts[1], 0, 23),
+        domMask: parseField(parts[2], 1, 31),
+        monthMask: parseField(parts[3], 1, 12),
+        dowMask: parseField(parts[4], 0, 6),
+        domIsStar: parts[2] === '*',
+        dowIsStar: parts[4] === '*'
+    };
+}
+
+function parseField(field, min, max) {
+    if (field === '*') {
+        return (1n << BigInt(max - min + 1)) - 1n << BigInt(min);
+    }
+    
+    let mask = 0n;
+    const parts = field.split(',');
+    
+    for (const part of parts) {
+        if (part.includes('-')) {
+            const [start, end] = part.split('-').map(Number);
+            for (let i = start; i <= end; i++) {
+                mask |= 1n << BigInt(i);
+            }
+        } else if (part.includes('/')) {
+            // Handle step values
+            const [range, step] = part.split('/');
+            const [start, end] = range === '*' 
+                ? [min, max] 
+                : range.split('-').map(Number);
+            
+            for (let i = start; i <= end; i += Number(step)) {
+                mask |= 1n << BigInt(i);
+            }
+        } else {
+            mask |= 1n << BigInt(part);
+        }
+    }
+    
+    return mask;
+}
+
+// Example usage
+const spec = parseCronExpression("0 9 * * 1-5");
+// Use spec values in your transaction
+```
+
+## License
+
+This project is licensed under the MIT License.
