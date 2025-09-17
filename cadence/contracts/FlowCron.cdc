@@ -4,6 +4,7 @@ import "FlowCronUtils"
 import "FlowToken"
 import "FungibleToken"
 import "ViewResolver"
+import "MetadataViews"
 
 /// FlowCron: A utility for scheduling recurring transactions using cron expressions.
 access(all) contract FlowCron {
@@ -125,7 +126,7 @@ access(all) contract FlowCron {
             let jobId = context.jobId
             // Get the cron job
             let jobRef = &self.jobs[jobId] as &CronJob?
-                ?? panic("Cron job not found: ".concat(jobId.toString()))
+                ?? panic("Cron job not found: \(jobId)")
 
             // 1. SCHEDULE FUTURE TRANSACTION FIRST (ensure continuity)
             // Get the future execution time for rescheduling that is the next execution after the next execution (future)
@@ -255,6 +256,7 @@ access(all) contract FlowCron {
             return [
                 Type<StoragePath>(),
                 Type<PublicPath>(),
+                Type<MetadataViews.Display>(),
                 Type<FlowTransactionSchedulerUtils.HandlerData>(),
                 Type<CronJobListView>()
             ]
@@ -266,6 +268,14 @@ access(all) contract FlowCron {
                     return FlowCron.CronHandlerStoragePath
                 case Type<PublicPath>():
                     return FlowCron.CronHandlerPublicPath
+                case Type<MetadataViews.Display>():
+                    return MetadataViews.Display(
+                        name: "FlowCron Handler",
+                        description: "Manages recurring scheduled transactions using cron expressions",
+                        thumbnail: MetadataViews.HTTPFile(
+                            url: ""
+                        )
+                    )
                 case Type<FlowTransactionSchedulerUtils.HandlerData>():
                     return FlowTransactionSchedulerUtils.HandlerData(
                         name: "FlowCron Handler",
@@ -292,7 +302,7 @@ access(all) contract FlowCron {
             }
             return nil
         }
-
+        
         /// Internal helper function to schedule a single transaction
         /// Handles fee estimation, withdrawal, and scheduling
         access(self) fun scheduleTransaction(
