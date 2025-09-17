@@ -253,12 +253,26 @@ access(all) contract FlowCron {
         /// ViewResolver implementation
         access(all) view fun getViews(): [Type] {
             return [
+                Type<StoragePath>(),
+                Type<PublicPath>(),
+                Type<FlowTransactionSchedulerUtils.HandlerData>(),
                 Type<CronJobListView>()
             ]
         }
         
         access(all) fun resolveView(_ view: Type): AnyStruct? {
             switch view {
+                case Type<StoragePath>():
+                    return FlowCron.CronHandlerStoragePath
+                case Type<PublicPath>():
+                    return FlowCron.CronHandlerPublicPath
+                case Type<FlowTransactionSchedulerUtils.HandlerData>():
+                    return FlowTransactionSchedulerUtils.HandlerData(
+                        name: "FlowCron Handler",
+                        description: "Manages recurring scheduled transactions using cron expressions",
+                        storagePath: FlowCron.CronHandlerStoragePath,
+                        publicPath: FlowCron.CronHandlerPublicPath
+                    )
                 case Type<CronJobListView>():
                     var jobs: {UInt64: CronJobView} = {}
                     for jobId in self.jobs.keys {
