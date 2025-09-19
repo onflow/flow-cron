@@ -45,7 +45,7 @@ access(all) contract FlowCron {
             cronSpec: FlowCronUtils.CronSpec,
             cronHandlerCap: Capability<auth(FlowTransactionScheduler.Execute) &{FlowTransactionScheduler.TransactionHandler}>,
             wrappedHandlerCap: Capability<auth(FlowTransactionScheduler.Execute) &{FlowTransactionScheduler.TransactionHandler}>,
-            schedulerManagerCap: Capability<auth(FlowTransactionSchedulerUtils.Owner) &FlowTransactionSchedulerUtils.Manager>,
+            schedulerManagerCap: Capability<auth(FlowTransactionSchedulerUtils.Owner) &{FlowTransactionSchedulerUtils.Manager}>,
             feeProviderCap: Capability<auth(FungibleToken.Withdraw) &FlowToken.Vault>,
             data: AnyStruct?,
             priority: FlowTransactionScheduler.Priority,
@@ -159,7 +159,7 @@ access(all) contract FlowCron {
         /// Cancel a cron job
         access(Owner) fun cancelJob(
             jobId: UInt64,
-            schedulerManagerCap: Capability<auth(FlowTransactionSchedulerUtils.Owner) &FlowTransactionSchedulerUtils.Manager>
+            schedulerManagerCap: Capability<auth(FlowTransactionSchedulerUtils.Owner) &{FlowTransactionSchedulerUtils.Manager}>
         ): @FlowToken.Vault {
             pre {
                 self.jobs.containsKey(jobId): "Cron job not found"
@@ -257,7 +257,6 @@ access(all) contract FlowCron {
                 Type<StoragePath>(),
                 Type<PublicPath>(),
                 Type<MetadataViews.Display>(),
-                Type<FlowTransactionSchedulerUtils.HandlerData>(),
                 Type<CronJobListView>()
             ]
         }
@@ -275,13 +274,6 @@ access(all) contract FlowCron {
                         thumbnail: MetadataViews.HTTPFile(
                             url: ""
                         )
-                    )
-                case Type<FlowTransactionSchedulerUtils.HandlerData>():
-                    return FlowTransactionSchedulerUtils.HandlerData(
-                        name: "FlowCron Handler",
-                        description: "Manages recurring scheduled transactions using cron expressions",
-                        storagePath: FlowCron.CronHandlerStoragePath,
-                        publicPath: FlowCron.CronHandlerPublicPath
                     )
                 case Type<CronJobListView>():
                     var jobs: {UInt64: CronJobView} = {}
@@ -477,7 +469,7 @@ access(all) contract FlowCron {
         access(all) let jobId: UInt64
         access(all) let cronSpec: FlowCronUtils.CronSpec
         access(all) let cronHandlerCap: Capability<auth(FlowTransactionScheduler.Execute) &{FlowTransactionScheduler.TransactionHandler}>
-        access(all) let schedulerManagerCap: Capability<auth(FlowTransactionSchedulerUtils.Owner) &FlowTransactionSchedulerUtils.Manager>
+        access(all) let schedulerManagerCap: Capability<auth(FlowTransactionSchedulerUtils.Owner) &{FlowTransactionSchedulerUtils.Manager}>
         access(all) let feeProviderCap: Capability<auth(FungibleToken.Withdraw) &FlowToken.Vault>
         access(all) let data: AnyStruct?
         access(all) let priority: FlowTransactionScheduler.Priority
@@ -487,7 +479,7 @@ access(all) contract FlowCron {
             jobId: UInt64,
             cronSpec: FlowCronUtils.CronSpec,
             cronHandlerCap: Capability<auth(FlowTransactionScheduler.Execute) &{FlowTransactionScheduler.TransactionHandler}>,
-            schedulerManagerCap: Capability<auth(FlowTransactionSchedulerUtils.Owner) &FlowTransactionSchedulerUtils.Manager>,
+            schedulerManagerCap: Capability<auth(FlowTransactionSchedulerUtils.Owner) &{FlowTransactionSchedulerUtils.Manager}>,
             feeProviderCap: Capability<auth(FungibleToken.Withdraw) &FlowToken.Vault>,
             data: AnyStruct?,
             priority: FlowTransactionScheduler.Priority,

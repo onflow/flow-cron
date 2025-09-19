@@ -12,6 +12,69 @@ access(all) contract FlowTransactionSchedulerUtils {
     /// Entitlements
     access(all) entitlement Owner
 
+    access(all) struct HandlerInfo {
+        access(all) let typeIdentifier: String
+        access(all) let transactionIDs: [UInt64]
+        access(contract) let capability: Capability<auth(FlowTransactionScheduler.Execute) &{FlowTransactionScheduler.TransactionHandler}>
+
+        init(typeIdentifier: String, capability: Capability<auth(FlowTransactionScheduler.Execute) &{FlowTransactionScheduler.TransactionHandler}>) {
+            self.typeIdentifier = typeIdentifier
+            self.capability = capability
+            self.transactionIDs = []
+        }
+
+        access(contract) fun addTransactionID(id: UInt64) {
+            self.transactionIDs.append(id)
+        }
+
+        access(contract) fun removeTransactionID(id: UInt64) {
+            let index = self.transactionIDs.firstIndex(of: id)
+            if index != nil {
+                self.transactionIDs.remove(at: index!)
+            }
+        }
+
+        access(contract) view fun borrow(): &{FlowTransactionScheduler.TransactionHandler}? {
+            return self.capability.borrow() as? &{FlowTransactionScheduler.TransactionHandler}
+        }
+    }
+
+    access(all) resource interface Manager {
+
+        access(Owner) fun schedule(
+            handlerCap: Capability<auth(FlowTransactionScheduler.Execute) &{FlowTransactionScheduler.TransactionHandler}>,
+            data: AnyStruct?,
+            timestamp: UFix64,
+            priority: FlowTransactionScheduler.Priority,
+            executionEffort: UInt64,
+            fees: @FlowToken.Vault
+        ): UInt64
+
+        access(Owner) fun scheduleByHandler(
+            handlerTypeIdentifier: String,
+            handlerUUID: UInt64?,
+            data: AnyStruct?,
+            timestamp: UFix64,
+            priority: FlowTransactionScheduler.Priority,
+            executionEffort: UInt64,
+            fees: @FlowToken.Vault
+        ): UInt64
+        access(Owner) fun cancel(id: UInt64): @FlowToken.Vault
+        access(all) view fun getTransactionData(_ id: UInt64): FlowTransactionScheduler.TransactionData?
+        access(all) view fun borrowTransactionHandlerForID(_ id: UInt64): &{FlowTransactionScheduler.TransactionHandler}?
+        access(all) fun getHandlerTypeIdentifiers(): {String: [UInt64]}
+        access(all) view fun borrowHandler(handlerTypeIdentifier: String, handlerUUID: UInt64?): &{FlowTransactionScheduler.TransactionHandler}?
+        access(all) fun getHandlerViews(handlerTypeIdentifier: String, handlerUUID: UInt64?): [Type] 
+        access(all) fun resolveHandlerView(handlerTypeIdentifier: String, handlerUUID: UInt64?, viewType: Type): AnyStruct?      
+        access(all) fun getHandlerViewsFromTransactionID(_ id: UInt64): [Type]
+        access(all) fun resolveHandlerViewFromTransactionID(_ id: UInt64, viewType: Type): AnyStruct? 
+        access(all) view fun getTransactionIDs(): [UInt64]
+        access(all) view fun getTransactionIDsByHandler(handlerTypeIdentifier: String, handlerUUID: UInt64?): [UInt64]
+        access(all) view fun getTransactionIDsByTimestamp(_ timestamp: UFix64): [UInt64]
+        access(all) fun getTransactionIDsByTimestampRange(startTimestamp: UFix64, endTimestamp: UFix64): {UFix64: [UInt64]}
+        access(all) view fun getTransactionStatus(id: UInt64): FlowTransactionScheduler.Status?
+    }
+
     /// Manager resource is meant to provide users and developers with a simple way
     /// to group the scheduled transactions that they own into one place to make it more
     /// convenient to schedule/cancel transactions and get information about the transactions
@@ -19,7 +82,7 @@ access(all) contract FlowTransactionSchedulerUtils {
     /// It stores ScheduledTransaction resources in a dictionary and has other fields
     /// to track the scheduled transactions by timestamp and handler
     ///
-    access(all) resource Manager {
+    access(all) resource ManagerV1: Manager {
         /// Dictionary storing scheduled transactions by their ID
         access(self) var scheduledTransactions: @{UInt64: FlowTransactionScheduler.ScheduledTransaction}
 
@@ -29,18 +92,23 @@ access(all) contract FlowTransactionSchedulerUtils {
         /// Dictionary storing the IDs of the transactions scheduled at a given timestamp
         access(self) let idsByTimestamp: {UFix64: [UInt64]}
 
-        /// Dictionary storing the IDs of the transactions scheduled using a given handler
-        access(self) let idsByHandler: {String: [UInt64]}
+        /// Dictionary storing the handler UUIDs for transaction IDs
+        access(self) let handlerUUIDsByTransactionID: {UInt64: UInt64}
 
         /// Dictionary storing the handlers that this manager has scheduled transactions for at one point
-        access(self) let handlers: {String: Capability<auth(FlowTransactionScheduler.Execute) &{FlowTransactionScheduler.TransactionHandler}>}
+        /// The field differentiates between handlers of the same type by their UUID because there can be multiple handlers of the same type
+        /// that perform the same functionality but maybe do it for different purposes
+        /// so it is important to differentiate between them in case the user needs to retrieve a specific handler
+        /// The metadata for each handler that potentially includes information about the handler's purpose
+        /// can be retrieved from the handler's reference via the getViews() and resolveView() functions
+        access(self) let handlerInfos: {String: {UInt64: HandlerInfo}}
 
         init() {
             self.scheduledTransactions <- {}
             self.sortedTimestamps = FlowTransactionScheduler.SortedTimestamps()
             self.idsByTimestamp = {}
-            self.idsByHandler = {}
-            self.handlers = {}
+            self.handlerUUIDsByTransactionID = {}
+            self.handlerInfos = {}
         }
 
         /// scheduleByHandler schedules a transaction by a given handler that has been used before
@@ -53,6 +121,7 @@ access(all) contract FlowTransactionSchedulerUtils {
         /// @return: The ID of the scheduled transaction
         access(Owner) fun scheduleByHandler(
             handlerTypeIdentifier: String,
+            handlerUUID: UInt64?,
             data: AnyStruct?,
             timestamp: UFix64,
             priority: FlowTransactionScheduler.Priority,
@@ -60,9 +129,19 @@ access(all) contract FlowTransactionSchedulerUtils {
             fees: @FlowToken.Vault
         ): UInt64 {
             pre {
-                self.handlers.containsKey(handlerTypeIdentifier): "Invalid handler type identifier: Handler with type identifier \(handlerTypeIdentifier) not found in manager"
+                self.handlerInfos.containsKey(handlerTypeIdentifier): "Invalid handler type identifier: Handler with type identifier \(handlerTypeIdentifier) not found in manager"
+                handlerUUID == nil || self.handlerInfos[handlerTypeIdentifier]!.containsKey(handlerUUID!): "Invalid handler UUID: Handler with type identifier \(handlerTypeIdentifier) and UUID \(handlerUUID!) not found in manager"
             }
-            return self.schedule(handlerCap: self.handlers[handlerTypeIdentifier]!, data: data, timestamp: timestamp, priority: priority, executionEffort: executionEffort, fees: <-fees)
+            let handlers = self.handlerInfos[handlerTypeIdentifier]!
+            var id = handlerUUID
+            if handlerUUID == nil {
+                assert (
+                    handlers.keys.length == 1,
+                    message: "Invalid handler UUID: Handler with type identifier \(handlerTypeIdentifier) has more than one UUID, but no UUID was provided"
+                )
+                id = handlers.keys[0]
+            }
+            return self.schedule(handlerCap: handlers[id!]!.capability, data: data, timestamp: timestamp, priority: priority, executionEffort: executionEffort, fees: <-fees)
         }
 
         /// Schedule a transaction and store it in the manager's dictionary
@@ -94,30 +173,45 @@ access(all) contract FlowTransactionSchedulerUtils {
                 fees: <-fees
             )
 
+            // Store the handler capability in our dictionary for later retrieval
             let id = scheduledTransaction.id
             let handlerRef = handlerCap.borrow()
                 ?? panic("Invalid transaction handler: Could not borrow a reference to the transaction handler")
             let handlerTypeIdentifier = handlerRef.getType().identifier
+            let handlerUUID = handlerRef.uuid
 
-            self.handlers[handlerTypeIdentifier] = handlerCap
+            self.handlerUUIDsByTransactionID[id] = handlerUUID
 
-            // Store the transaction in our dictionary
+            // Store the handler capability in the handlers dictionary for later retrieval
+            if let handlers = self.handlerInfos[handlerTypeIdentifier] {
+                if let handlerInfo = handlers[handlerUUID] {
+                    handlerInfo.addTransactionID(id: id)
+                    handlers[handlerUUID] = handlerInfo
+                } else {
+                    let handlerInfo = HandlerInfo(typeIdentifier: handlerTypeIdentifier, capability: handlerCap)
+                    handlerInfo.addTransactionID(id: id)
+                    handlers[handlerUUID] = HandlerInfo(typeIdentifier: handlerTypeIdentifier, capability: handlerCap)
+                }
+                self.handlerInfos[handlerTypeIdentifier] = handlers
+            } else {
+                let handlerInfo = HandlerInfo(typeIdentifier: handlerTypeIdentifier, capability: handlerCap)
+                handlerInfo.addTransactionID(id: id)
+                let uuidDictionary: {UInt64: HandlerInfo} = {handlerUUID: handlerInfo}
+                self.handlerInfos[handlerTypeIdentifier] = uuidDictionary
+            }
+
+            // Store the transaction in the transactions dictionary
             self.scheduledTransactions[scheduledTransaction.id] <-! scheduledTransaction
 
+            // Add the transaction to the sorted timestamps array
             self.sortedTimestamps.add(timestamp: timestamp)
 
+            // Store the transaction in the ids by timestamp dictionary
             if let ids = self.idsByTimestamp[timestamp] {
                 ids.append(id)
                 self.idsByTimestamp[timestamp] = ids
             } else {
                 self.idsByTimestamp[timestamp] = [id]
-            }
-
-            if let ids = self.idsByHandler[handlerTypeIdentifier] {
-                ids.append(id)
-                self.idsByHandler[handlerTypeIdentifier] = ids
-            } else {
-                self.idsByHandler[handlerTypeIdentifier] = [id]
             }
 
             return id
@@ -127,12 +221,9 @@ access(all) contract FlowTransactionSchedulerUtils {
         /// @param id: The ID of the transaction to cancel
         /// @return: A FlowToken vault containing the refunded fees
         access(Owner) fun cancel(id: UInt64): @FlowToken.Vault {
-            // Remove the transaction from our dictionary
+            // Remove the transaction from the transactions dictionary
             let tx <- self.scheduledTransactions.remove(key: id)
                 ?? panic("Invalid ID: Transaction with ID \(id) not found in manager")
-
-            let transactionData = FlowTransactionScheduler.getTransactionData(id: id)
-                ?? panic("Invalid ID: Transaction with ID \(id) not found in scheduler")
 
             self.removeID(id: id, timestamp: tx.timestamp, handlerTypeIdentifier: tx.handlerTypeIdentifier)
 
@@ -147,6 +238,7 @@ access(all) contract FlowTransactionSchedulerUtils {
         /// @param timestamp: The timestamp of the transaction to remove
         /// @param handlerTypeIdentifier: The type identifier of the handler of the transaction to remove
         access(self) fun removeID(id: UInt64, timestamp: UFix64, handlerTypeIdentifier: String) {
+
             if let ids = self.idsByTimestamp[timestamp] {
                 let index = ids.firstIndex(of: id)
                 ids.remove(at: index!)
@@ -157,10 +249,16 @@ access(all) contract FlowTransactionSchedulerUtils {
                 }
             }
 
-            if let ids = self.idsByHandler[handlerTypeIdentifier] {
-                let index = ids.firstIndex(of: id)
-                ids.remove(at: index!)
-                self.idsByHandler[handlerTypeIdentifier] = ids
+            let handlerUUID = self.handlerUUIDsByTransactionID.remove(key: id)
+                ?? panic("Invalid ID: Transaction with ID \(id) not found in manager")
+
+            // Remove the transaction ID from the handler info array
+            if let handlers = self.handlerInfos[handlerTypeIdentifier] {
+                if let handlerInfo = handlers[handlerUUID] {
+                    handlerInfo.removeTransactionID(id: id)
+                    handlers[handlerUUID] = handlerInfo
+                }
+                self.handlerInfos[handlerTypeIdentifier] = handlers
             }
         }
 
@@ -193,10 +291,44 @@ access(all) contract FlowTransactionSchedulerUtils {
             return transactionsToRemove
         }
 
+        /// Remove a handler capability from the manager
+        /// The specified handler must not have any transactions scheduled for it
+        /// @param handlerTypeIdentifier: The type identifier of the handler
+        /// @param handlerUUID: The UUID of the handler
+        access(Owner) fun removeHandler(handlerTypeIdentifier: String, handlerUUID: UInt64?) {
+            // Make sure the handler exists
+            if let handlers = self.handlerInfos[handlerTypeIdentifier] {
+                var id = handlerUUID
+                // If no UUID is provided, there must be only one handler of the type
+                if handlerUUID == nil {
+                    if handlers.keys.length > 1 {
+                        // No-op if we don't know which UUID to remove
+                        return
+                    }
+                    id = handlers.keys[0]
+                }
+                // Make sure the handler has no transactions scheduled for it
+                if let handlerInfo = handlers[id!] {
+                    if handlerInfo.transactionIDs.length > 0 {
+                        return
+                    }
+                }
+                // Remove the handler uuid from the handlers dictionary
+                handlers.remove(key: id!)
+
+                // If there are no more handlers of the type, remove the type from the handlers dictionary
+                if handlers.keys.length == 0 {
+                    self.handlerInfos.remove(key: handlerTypeIdentifier)
+                } else {
+                    self.handlerInfos[handlerTypeIdentifier] = handlers
+                }
+            }
+        }
+
         /// Get transaction data by its ID
         /// @param id: The ID of the transaction to retrieve
         /// @return: The transaction data from FlowTransactionScheduler, or nil if not found
-        access(all) view fun getTransactionData(id: UInt64): FlowTransactionScheduler.TransactionData? {
+        access(all) view fun getTransactionData(_ id: UInt64): FlowTransactionScheduler.TransactionData? {
             if self.scheduledTransactions.containsKey(id) {
                 return FlowTransactionScheduler.getTransactionData(id: id)
             }
@@ -206,45 +338,66 @@ access(all) contract FlowTransactionSchedulerUtils {
         /// Get an un-entitled reference to a transaction handler of a given ID
         /// @param id: The ID of the transaction to retrieve
         /// @return: A reference to the transaction handler, or nil if not found
-        access(all) view fun getTransactionHandler(id: UInt64): &{FlowTransactionScheduler.TransactionHandler}? {
-            let txData = self.getTransactionData(id: id)
-            return txData?.getUnentitledHandlerReference()
+        access(all) view fun borrowTransactionHandlerForID(_ id: UInt64): &{FlowTransactionScheduler.TransactionHandler}? {
+            let txData = self.getTransactionData(id)
+            return txData?.borrowHandler()
         }
 
         /// Get all the handler type identifiers that the manager has transactions scheduled for
-        /// @return: An array of all handler type identifiers
-        access(all) view fun getHandlerTypeIdentifiers(): [String] {
-            return self.handlers.keys
+        /// @return: A dictionary of all handler type identifiers and their UUIDs
+        access(all) fun getHandlerTypeIdentifiers(): {String: [UInt64]} {
+            var handlerTypeIdentifiers: {String: [UInt64]} = {}
+            for handlerTypeIdentifier in self.handlerInfos.keys {
+                let handlerUUIDs: [UInt64] = []
+                let handlerTypes = self.handlerInfos[handlerTypeIdentifier]!
+                for uuid in handlerTypes.keys {
+                    let handlerInfo = handlerTypes[uuid]!
+                    if handlerInfo.transactionIDs.length == 0 || !handlerInfo.capability.check() {
+                        continue
+                    }
+                    handlerUUIDs.append(uuid)
+                }
+                handlerTypeIdentifiers[handlerTypeIdentifier] = handlerUUIDs
+            }
+            return handlerTypeIdentifiers
         }
 
         /// Get an un-entitled reference to a handler by a given type identifier
         /// @param handlerTypeIdentifier: The type identifier of the handler
+        /// @param handlerUUID: The UUID of the handler, if nil, there must be only one handler of the type, otherwise nil will be returned
         /// @return: An un-entitled reference to the handler, or nil if not found
-        access(all) view fun getHandlerByTypeIdentifier(handlerTypeIdentifier: String): &{FlowTransactionScheduler.TransactionHandler}? {
-            return self.handlers[handlerTypeIdentifier]?.borrow() as? &{FlowTransactionScheduler.TransactionHandler}
+        access(all) view fun borrowHandler(handlerTypeIdentifier: String, handlerUUID: UInt64?): &{FlowTransactionScheduler.TransactionHandler}? {
+            var uuid = handlerUUID
+            if let handlers = self.handlerInfos[handlerTypeIdentifier] {
+                if handlerUUID == nil {
+                    uuid = handlers.keys.length == 1 ? handlers.keys[0]! : nil
+                }
+                if let handlerInfo = handlers[uuid!] {
+                    return handlerInfo.borrow()
+                }
+            }
+            return nil
         }
 
         /// Get all the views that a handler implements
         /// @param handlerTypeIdentifier: The type identifier of the handler
+        /// @param handlerUUID: The UUID of the handler, if nil, there must be only one handler of the type, otherwise nil will be returned
         /// @return: An array of all views
-        access(all) fun getHandlerViews(handlerTypeIdentifier: String): [Type] {
-            if let handler = self.handlers[handlerTypeIdentifier]?.borrow() {
-                if let ref = handler {
-                    return ref.getViews()
-                }
+        access(all) fun getHandlerViews(handlerTypeIdentifier: String, handlerUUID: UInt64?): [Type] {
+            if let handler = self.borrowHandler(handlerTypeIdentifier: handlerTypeIdentifier, handlerUUID: handlerUUID) {
+                return handler.getViews()
             }
             return []
         }
 
         /// Resolve a view for a handler by a given type identifier
         /// @param handlerTypeIdentifier: The type identifier of the handler
+        /// @param handlerUUID: The UUID of the handler, if nil, there must be only one handler of the type, otherwise nil will be returned
         /// @param viewType: The type of the view to resolve
         /// @return: The resolved view, or nil if not found
-        access(all) fun resolveHandlerView(handlerTypeIdentifier: String, viewType: Type): AnyStruct? {
-            if let handler = self.handlers[handlerTypeIdentifier]?.borrow() {
-                if let ref = handler {
-                    return ref.resolveView(viewType)
-                }
+        access(all) fun resolveHandlerView(handlerTypeIdentifier: String, handlerUUID: UInt64?, viewType: Type): AnyStruct? {
+            if let handler = self.borrowHandler(handlerTypeIdentifier: handlerTypeIdentifier, handlerUUID: handlerUUID) {
+                return handler.resolveView(viewType)
             }
             return nil
         }
@@ -252,8 +405,8 @@ access(all) contract FlowTransactionSchedulerUtils {
         /// Get all the views that a handler implements from a given transaction ID
         /// @param transactionId: The ID of the transaction
         /// @return: An array of all views
-        access(all) fun getHandlerViewsFromTransactionID(transactionId: UInt64): [Type] {
-            if let handler = self.getTransactionHandler(id: transactionId) {
+        access(all) fun getHandlerViewsFromTransactionID(_ id: UInt64): [Type] {
+            if let handler = self.borrowTransactionHandlerForID(id) {
                 return handler.getViews()
             }
             return []
@@ -263,8 +416,8 @@ access(all) contract FlowTransactionSchedulerUtils {
         /// @param transactionId: The ID of the transaction
         /// @param viewType: The type of the view to resolve
         /// @return: The resolved view, or nil if not found
-        access(all) fun resolveHandlerViewFromTransactionID(transactionId: UInt64, viewType: Type): AnyStruct? {
-            if let handler = self.getTransactionHandler(id: transactionId) {
+        access(all) fun resolveHandlerViewFromTransactionID(_ id: UInt64, viewType: Type): AnyStruct? {
+            if let handler = self.borrowTransactionHandlerForID(id) {
                 return handler.resolveView(viewType)
             }
             return nil
@@ -279,14 +432,23 @@ access(all) contract FlowTransactionSchedulerUtils {
         /// Get all transaction IDs stored in the manager by a given handler
         /// @param handlerTypeIdentifier: The type identifier of the handler
         /// @return: An array of all transaction IDs
-        access(all) view fun getTransactionIDsByHandler(handlerTypeIdentifier: String): [UInt64] {
-            return self.idsByHandler[handlerTypeIdentifier] ?? []
+        access(all) view fun getTransactionIDsByHandler(handlerTypeIdentifier: String, handlerUUID: UInt64?): [UInt64] {
+            var uuid = handlerUUID
+            if let handlers = self.handlerInfos[handlerTypeIdentifier] {
+                if handlerUUID == nil {
+                    uuid = handlers.keys.length == 1 ? handlers.keys[0] : nil
+                }
+                if let handlerInfo = handlers[uuid!] {
+                    return handlerInfo.transactionIDs
+                }
+            }
+            return []
         }
 
         /// Get all transaction IDs stored in the manager by a given timestamp
         /// @param timestamp: The timestamp
         /// @return: An array of all transaction IDs
-        access(all) view fun getTransactionIDsByTimestamp(timestamp: UFix64): [UInt64] {
+        access(all) view fun getTransactionIDsByTimestamp(_ timestamp: UFix64): [UInt64] {
             return self.idsByTimestamp[timestamp] ?? []
         }
 
@@ -332,8 +494,8 @@ access(all) contract FlowTransactionSchedulerUtils {
 
     /// Create a new Manager instance
     /// @return: A new Manager resource
-    access(all) fun createManager(): @Manager {
-        return <-create Manager()
+    access(all) fun createManager(): @{Manager} {
+        return <-create ManagerV1()
     }
 
     access(all) init() {
@@ -344,8 +506,8 @@ access(all) contract FlowTransactionSchedulerUtils {
     /// Get a public reference to a manager at the given address
     /// @param address: The address of the manager
     /// @return: A public reference to the manager
-    access(all) view fun getManager(address: Address): &Manager? {
-        return getAccount(address).capabilities.borrow<&Manager>(self.managerPublicPath)
+    access(all) view fun borrowManager(at: Address): &{Manager}? {
+        return getAccount(at).capabilities.borrow<&{Manager}>(self.managerPublicPath)
     }
 
     /********************************************
@@ -354,35 +516,4 @@ access(all) contract FlowTransactionSchedulerUtils {
     
     ***********************************************/
 
-    /// HandlerData is a struct that contains the important data for a handler
-    /// that is used to identify the handler and its capabilities
-    /// The scheduled transactions smart contract will use this data to identify the handler
-    /// and its capabilities when scheduling a transaction and executing the transaction
-    /// The information from this view will be used in the events so it is very important that it is accurate
-    access(all) struct HandlerData {
-
-        // short name of the handler
-        access(all) let name: String
-
-        // description of what the handler does
-        access(all) let description: String
-
-        // path where this handler should be stored in storage
-        access(all) let storagePath: StoragePath
-
-        // path where this handler's public capability should be found
-        access(all) let publicPath: PublicPath
-
-        init(
-            name: String,
-            description: String,
-            storagePath: StoragePath,
-            publicPath: PublicPath
-        ) {
-            self.name = name
-            self.description = description
-            self.storagePath = storagePath
-            self.publicPath = publicPath
-        }
-    }
 }

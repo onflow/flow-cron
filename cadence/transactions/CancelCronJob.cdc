@@ -5,7 +5,7 @@ import "FungibleToken"
 
 transaction(jobId: UInt64) {
     let cronHandler: auth(FlowCron.Owner) &FlowCron.CronHandler
-    let schedulerManagerCap: Capability<auth(FlowTransactionSchedulerUtils.Owner) &FlowTransactionSchedulerUtils.Manager>
+    let schedulerManagerCap: Capability<auth(FlowTransactionSchedulerUtils.Owner) &{FlowTransactionSchedulerUtils.Manager}>
     let tokenReceiver: &{FungibleToken.Receiver}
 
     prepare(signer: auth(BorrowValue, IssueStorageCapabilityController) &Account) {

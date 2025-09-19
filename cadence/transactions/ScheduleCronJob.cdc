@@ -15,7 +15,7 @@ transaction(
     let cronHandler: auth(FlowCron.Owner) &FlowCron.CronHandler
     let cronHandlerCap: Capability<auth(FlowTransactionScheduler.Execute) &{FlowTransactionScheduler.TransactionHandler}>
     let wrappedHandlerCap: Capability<auth(FlowTransactionScheduler.Execute) &{FlowTransactionScheduler.TransactionHandler}>
-    let schedulerManagerCap: Capability<auth(FlowTransactionSchedulerUtils.Owner) &FlowTransactionSchedulerUtils.Manager>
+    let schedulerManagerCap: Capability<auth(FlowTransactionSchedulerUtils.Owner) &{FlowTransactionSchedulerUtils.Manager}>
     let feeProviderCap: Capability<auth(FungibleToken.Withdraw) &FlowToken.Vault>
 
     prepare(signer: auth(BorrowValue, IssueStorageCapabilityController, SaveValue) &Account) {
