@@ -14,9 +14,9 @@ access(all) contract FlowCron {
 
         /// Cron expression for scheduling
         access(all) let cronExpression: String
-
         /// Cron spec for scheduling
-        access(self) let cronSpec: FlowCronUtils.CronSpec
+        access(all) let cronSpec: FlowCronUtils.CronSpec
+
         /// The handler that performs the actual work
         access(self) let wrappedHandlerCap: Capability<auth(FlowTransactionScheduler.Execute) &{FlowTransactionScheduler.TransactionHandler}>
         
@@ -40,7 +40,8 @@ access(all) contract FlowCron {
 
             // Calculate the future time at which the future transaction should be executed
             // 1 -> 2 -> 3 where 1 is this tx, 2 is already scheduled, 3 is the future tx that will be scheduled
-            let nextTime = FlowCronUtils.nextTick(spec: self.cronSpec, afterUnix: UInt64(getCurrentBlock().timestamp))
+            let currentTime = UInt64(getCurrentBlock().timestamp)
+            let nextTime = FlowCronUtils.nextTick(spec: self.cronSpec, afterUnix: currentTime)
                 ?? panic("Cannot find next execution time for cron expression")
             let futureTime = FlowCronUtils.nextTick(spec: self.cronSpec, afterUnix: nextTime)
                 ?? panic("Cannot find future execution time for cron expression")
@@ -61,7 +62,7 @@ access(all) contract FlowCron {
             let fees <- feeVault.withdraw(amount: estimate.flowFee!)
             
             // Schedule future transaction to ensure continuity, next is always already scheduled (2 txs always scheduled)
-            let schedulerManager = context.managerCap.borrow()
+            let schedulerManager = context.schedulerManagerCap.borrow()
                 ?? panic("Cannot borrow scheduler manager capability")
             // Use shortcut function to avoid passing the handler capability
             let futureTransactionId = schedulerManager.scheduleByHandler(
@@ -108,6 +109,7 @@ access(all) contract FlowCron {
                     let nextExecution = FlowCronUtils.nextTick(spec: self.cronSpec, afterUnix: UInt64(getCurrentBlock().timestamp))
                     return CronHandlerInfo(
                         cronExpression: self.cronExpression,
+                        cronSpec: self.cronSpec,
                         nextExecution: nextExecution,
                         wrappedHandlerType: wrappedHandler?.getType()?.identifier,
                         wrappedHandlerUUID: wrappedHandler?.uuid
@@ -121,20 +123,20 @@ access(all) contract FlowCron {
     /// Context passed to each cron execution (it's private in transaction data)
     /// It contains all the data that is needed for execution the cron handler, specific per scheduling run
     access(all) struct CronContext {
-        access(all) let managerCap: Capability<auth(FlowTransactionSchedulerUtils.Owner) &{FlowTransactionSchedulerUtils.Manager}>
+        access(all) let schedulerManagerCap: Capability<auth(FlowTransactionSchedulerUtils.Owner) &{FlowTransactionSchedulerUtils.Manager}>
         access(all) let feeProviderCap: Capability<auth(FungibleToken.Withdraw) &FlowToken.Vault>
         access(all) let priority: FlowTransactionScheduler.Priority
         access(all) let executionEffort: UInt64
         access(all) let wrappedData: AnyStruct?
         
         init(
-            managerCap: Capability<auth(FlowTransactionSchedulerUtils.Owner) &{FlowTransactionSchedulerUtils.Manager}>,
+            schedulerManagerCap: Capability<auth(FlowTransactionSchedulerUtils.Owner) &{FlowTransactionSchedulerUtils.Manager}>,
             feeProviderCap: Capability<auth(FungibleToken.Withdraw) &FlowToken.Vault>,
             priority: FlowTransactionScheduler.Priority,
             executionEffort: UInt64,
             wrappedData: AnyStruct?
         ) {
-            self.managerCap = managerCap
+            self.schedulerManagerCap = schedulerManagerCap
             self.feeProviderCap = feeProviderCap
             self.priority = priority
             self.executionEffort = executionEffort
@@ -145,23 +147,106 @@ access(all) contract FlowCron {
     /// View structure for cron job information
     access(all) struct CronHandlerInfo {
         access(all) let cronExpression: String
+        access(all) let cronSpec: FlowCronUtils.CronSpec
         access(all) let nextExecution: UInt64?
         access(all) let wrappedHandlerType: String?
         access(all) let wrappedHandlerUUID: UInt64?
         
         init(
             cronExpression: String,
+            cronSpec: FlowCronUtils.CronSpec,
             nextExecution: UInt64?,
             wrappedHandlerType: String?,
             wrappedHandlerUUID: UInt64?
         ) {
             self.cronExpression = cronExpression
+            self.cronSpec = cronSpec
             self.nextExecution = nextExecution
             self.wrappedHandlerType = wrappedHandlerType
             self.wrappedHandlerUUID = wrappedHandlerUUID
         }
     }
-    
+
+    // Helper function to schedule a cron handler with correct double scheduling setup
+    access(all) fun scheduleCronHandler(
+        cronHandlerCap: Capability<auth(FlowTransactionScheduler.Execute) &{FlowTransactionScheduler.TransactionHandler}>,
+        schedulerManagerCap: Capability<auth(FlowTransactionSchedulerUtils.Owner) &{FlowTransactionSchedulerUtils.Manager}>,
+        feeProviderCap: Capability<auth(FungibleToken.Withdraw) &FlowToken.Vault>,
+        data: AnyStruct?,
+        priority: FlowTransactionScheduler.Priority,
+        executionEffort: UInt64
+    ): [UInt64] {
+        // Create execution context that is needed to execute the cron job and to reschedule it
+        let context = CronContext(
+            schedulerManagerCap: schedulerManagerCap,
+            feeProviderCap: feeProviderCap,
+            priority: priority,
+            executionEffort: executionEffort,
+            wrappedData: data
+        )
+
+        // Borrow cron handler
+        let cronHandler = cronHandlerCap.borrow()
+            ?? panic("Cannot borrow cron handler capability")
+        // Get cron spec from its view
+        let cronHandlerInfo = cronHandler.resolveView(Type<CronHandlerInfo>()) as! CronHandlerInfo
+        
+        // Calculate next execution time
+        let currentTime = UInt64(getCurrentBlock().timestamp)
+        let nextTime = FlowCronUtils.nextTick(spec: cronHandlerInfo.cronSpec, afterUnix: currentTime)
+            ?? panic("Cannot find next execution time for cron expression")
+        // Calculate future execution time for double scheduling
+        // To add redundancy and be sure that the cron job continues even if the next execution fails
+        // We will always keep 2 scheduled executions 1 for the next and the 2 for the future
+        let futureTime = FlowCronUtils.nextTick(spec: cronHandlerInfo.cronSpec, afterUnix: nextTime)
+            ?? panic("Cannot find future execution time for cron expression")
+        
+        // Estimate and withdraw fees for next and future transactions
+        let estimateNext = FlowTransactionScheduler.estimate(
+            data: context,
+            timestamp: UFix64(nextTime),
+            priority: context.priority,
+            executionEffort: context.executionEffort
+        )
+        let estimateFuture = FlowTransactionScheduler.estimate(
+            data: context,
+            timestamp: UFix64(futureTime),
+            priority: context.priority,
+            executionEffort: context.executionEffort
+        )
+        if estimateNext.flowFee == nil || estimateFuture.flowFee == nil {
+            panic(estimateNext.error ?? estimateFuture.error ?? "Failed to estimate transaction fee")
+        }
+        // Borrow fee provider and withdraw fees
+        let feeVault = context.feeProviderCap.borrow()
+            ?? panic("Cannot borrow fee provider capability")
+        let feesNext <- feeVault.withdraw(amount: estimateNext.flowFee!)
+        let feesFuture <- feeVault.withdraw(amount: estimateFuture.flowFee!)
+        
+        // Schedule next and future transactions to ensure continuity
+        let schedulerManager = context.schedulerManagerCap.borrow()
+            ?? panic("Cannot borrow scheduler manager capability")
+        // Schedule them using the normal schedule function because we are not sure if the handler has been already used before
+        let nextTransactionId = schedulerManager.schedule(
+            handlerCap: cronHandlerCap,
+            data: context,
+            timestamp: UFix64(nextTime),
+            priority: context.priority,
+            executionEffort: context.executionEffort,
+            fees: <-feesNext as! @FlowToken.Vault
+        )
+        let futureTransactionId = schedulerManager.schedule(
+            handlerCap: cronHandlerCap,
+            data: context,
+            timestamp: UFix64(futureTime),
+            priority: context.priority,
+            executionEffort: context.executionEffort,
+            fees: <-feesFuture as! @FlowToken.Vault
+        )
+
+        return [nextTransactionId, futureTransactionId]
+    }
+
     /// Create a new CronHandler resource
     access(all) fun createCronHandler(
         cronExpression: String,
