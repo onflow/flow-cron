@@ -1,20 +1,33 @@
-import "FlowTransactionScheduler"
+import "FlowTransactionSchedulerUtils"
 
-access(all) struct HandlerInfo {
+access(all) struct HandlerData {
     access(all) let handlerTypeIdentifier: String
+    access(all) let handlerUUID: UInt64
+    access(all) let transactionIDs: [UInt64]
     access(all) let resolvedViews: {Type: AnyStruct}
-    
-    init(handlerTypeIdentifier: String, resolvedViews: {Type: AnyStruct}) {
+
+    init(
+        handlerTypeIdentifier: String, 
+        handlerUUID: UInt64, 
+        transactionIDs: [UInt64],
+        resolvedViews: {Type: AnyStruct}
+    ) {
         self.handlerTypeIdentifier = handlerTypeIdentifier
+        self.handlerUUID = handlerUUID
+        self.transactionIDs = transactionIDs
         self.resolvedViews = resolvedViews
     }
 }
 
-access(all) fun main(transactionId: UInt64): HandlerInfo? {
-    // Get transaction data directly from FlowTransactionScheduler
-    if let txData = FlowTransactionScheduler.getTransactionData(id: transactionId) {
-        // Get the unentitled handler reference from the transaction data
-        let handler = txData.getUnentitledHandlerReference()
+access(all) fun main(managerAddress: Address, transactionId: UInt64): HandlerData? {
+    // Borrow the Manager from the provided address
+    let manager = FlowTransactionSchedulerUtils.borrowManager(at: managerAddress)
+        ?? panic("Could not borrow Manager at address")
+    
+    // Get transaction data through the Manager
+    if let txData = manager.getTransactionData(transactionId) {
+        // Borrow the handler directly from transaction data
+        let handler = txData.borrowHandler()
         
         // Get all available views from the handler
         let availableViews = handler.getViews()
@@ -29,9 +42,17 @@ access(all) fun main(transactionId: UInt64): HandlerInfo? {
             }
         }
         
-        // Return HandlerInfo with all resolved views
-        return HandlerInfo(
+        // Get all transaction IDs for this handler
+        let transactionIDs = manager.getTransactionIDsByHandler(
             handlerTypeIdentifier: txData.handlerTypeIdentifier,
+            handlerUUID: handler.uuid
+        )
+        
+        // Return HandlerData with all information
+        return HandlerData(
+            handlerTypeIdentifier: txData.handlerTypeIdentifier,
+            handlerUUID: handler.uuid,
+            transactionIDs: transactionIDs,
             resolvedViews: resolvedViews
         )
     }

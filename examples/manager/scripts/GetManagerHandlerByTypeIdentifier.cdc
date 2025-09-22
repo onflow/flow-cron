@@ -1,27 +1,33 @@
 import "FlowTransactionScheduler"
 import "FlowTransactionSchedulerUtils"
 
-access(all) struct HandlerInfo {
+access(all) struct HandlerData {
     access(all) let handlerTypeIdentifier: String
+    access(all) let handlerUUID: UInt64
+    access(all) let transactionIDs: [UInt64]
     access(all) let resolvedViews: {Type: AnyStruct}
-    
-    init(handlerTypeIdentifier: String, resolvedViews: {Type: AnyStruct}) {
+
+    init(
+        handlerTypeIdentifier: String, 
+        handlerUUID: UInt64, 
+        transactionIDs: [UInt64],
+        resolvedViews: {Type: AnyStruct}
+    ) {
         self.handlerTypeIdentifier = handlerTypeIdentifier
+        self.handlerUUID = handlerUUID
+        self.transactionIDs = transactionIDs
         self.resolvedViews = resolvedViews
     }
 }
 
-access(all) fun main(accountAddress: Address, handlerTypeIdentifier: String): HandlerInfo? {
-    let account = getAccount(accountAddress)
-    
-    // Try to get the Manager if it exists
-    let managerCap = account.capabilities.get<&FlowTransactionSchedulerUtils.Manager>(
-        FlowTransactionSchedulerUtils.managerPublicPath
-    )
-    
-    if let manager = managerCap.borrow() {
-        // Get the handler reference using getHandlerByTypeIdentifier
-        if let handler = manager.getHandlerByTypeIdentifier(handlerTypeIdentifier: handlerTypeIdentifier) {
+access(all) fun main(managerAddress: Address, handlerTypeIdentifier: String, handlerUUID: UInt64?): HandlerData? {
+    // Use the helper function to borrow the manager
+    if let manager = FlowTransactionSchedulerUtils.borrowManager(at: managerAddress) {
+        // Get the handler reference using borrowHandler with optional UUID
+        if let handler = manager.borrowHandler(handlerTypeIdentifier: handlerTypeIdentifier, handlerUUID: handlerUUID) {
+            // Get the actual UUID from the handler
+            let actualUUID = handler.uuid
+            
             // Get all available views from the handler
             let availableViews = handler.getViews()
             
@@ -35,9 +41,17 @@ access(all) fun main(accountAddress: Address, handlerTypeIdentifier: String): Ha
                 }
             }
             
-            // Return HandlerInfo with all resolved views
-            return HandlerInfo(
+            // Get all transaction IDs for this handler
+            let transactionIDs = manager.getTransactionIDsByHandler(
                 handlerTypeIdentifier: handlerTypeIdentifier,
+                handlerUUID: actualUUID
+            )
+            
+            // Return HandlerData with all information
+            return HandlerData(
+                handlerTypeIdentifier: handlerTypeIdentifier,
+                handlerUUID: actualUUID,
+                transactionIDs: transactionIDs,
                 resolvedViews: resolvedViews
             )
         }

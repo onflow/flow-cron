@@ -1,224 +1,119 @@
 # FlowCron - Cron Job Scheduling on Flow
 
-FlowCron is a smart contract system that brings the power of cron job scheduling to the Flow blockchain. It enables autonomous, recurring transaction execution without external triggers, allowing smart contracts to "wake up" and execute logic at predefined times using familiar cron expressions.
-
-## Table of Contents
-
-- [Overview](#overview)
-- [Architecture](#architecture)
-- [Core Components](#core-components)
-- [How It Works](#how-it-works)
-- [Usage Guide](#usage-guide)
-- [FlowCronUtils - The Cron Expression Engine](#flowcronutils---the-cron-expression-engine)
-- [Transaction Reference](#transaction-reference)
-- [Script Reference](#script-reference)
-- [Best Practices](#best-practices)
-- [Examples](#examples)
+FlowCron enables autonomous, recurring transaction execution without external triggers, allowing smart contracts to "wake up" and execute logic at predefined times using cron expressions.
 
 ## Overview
 
-FlowCron leverages Flow's native transaction scheduling capabilities (FLIP-330) to implement recurring executions. Unlike traditional cron systems that require external schedulers, FlowCron operates entirely on-chain, ensuring decentralization and reliability.
+FlowCron leverages Flow's native transaction scheduling capabilities (FLIP-330) to implement recurring executions. Unlike traditional cron systems that require external schedulers, FlowCron operates entirely onchain, ensuring decentralization and reliability.
 
 ### Key Features
 
 - **Standard Cron Syntax**: Uses familiar 5-field cron expressions (minute, hour, day-of-month, month, day-of-week)
 - **Self-Perpetuating**: Jobs automatically reschedule themselves after each execution
-- **Fault Tolerant**: Double-buffering pattern ensures continuity even if an execution fails
+- **Fault Tolerant**: Double-buffering pattern ensures continuity even if wrapped handler fails
 - **Flexible Priority**: Support for High, Medium, and Low priority executions
 - **Cost Efficient**: Optimized bitmask operations minimize computation and storage
-- **View Resolver Integration**: Full support for querying job states and custom handler data
+- **View Resolver Integration**: Full support for querying job states and their wrapped handler metadata
+- **Distributed Design**: Each user controls their own CronHandler resources
 
 ## Architecture
 
-### System Overview
-
-```
-+----------------------------------------------------------+
-|                    User Account                          |
-+----------------------------------------------------------+
-|                                                          |
-|  +-----------------+    +---------------------------+    |
-|  |  CronHandler    |--->|      CronJob #1           |    |
-|  |                 |    |  - cronSpec               |    |
-|  |  - jobs         |    |  - wrappedHandlerCap      |    |
-|  |  - nextJobId    |    |  - executionCount         |    |
-|  |                 |    +---------------------------+    |
-|  |                 |                                     |
-|  |                 |    +---------------------------+    |
-|  |                 |--->|      CronJob #2           |    |
-|  |                 |    +---------------------------+    |
-|  +-----------------+                                     |
-|           |                                              |
-|           v                                              |
-|  +---------------------------------------------------+   |
-|  |     TransactionSchedulerUtils.Manager             |   |
-|  |  - Manages scheduled transactions                 |   |
-|  +---------------------------------------------------+   |
-|                                                          |
-|  +---------------------------------------------------+   |
-|  |         Custom Handler (User's)                   |   |
-|  |  - Implements TransactionHandler                  |   |
-|  |  - Contains actual job logic                      |   |
-|  +---------------------------------------------------+   |
-+----------------------------------------------------------+
-```
-
 ### Core Design Principles
 
-1. **Resource Ownership**: Each account owns its CronHandler resource, ensuring complete control over scheduled jobs
-2. **Double-Buffer Pattern**: Two transactions are always scheduled (next and future) to ensure continuity
-3. **Atomic Rescheduling**: New executions are scheduled before current execution completes
+1. **Distributed Ownership**: Each CronHandler is an independent resource owned by users
+2. **No Central State**: Leverages Manager's existing tracking instead of maintaining separate state
+3. **Double-Buffer Pattern**: Two transactions are always scheduled (next and future) to ensure continuity
+4. **Atomic Rescheduling**: New executions are scheduled before wrapped handler execution
+5. **Failure Isolation**: Wrapped handler failures don't stop the cron schedule
 
 ## Core Components
 
 ### CronHandler Resource
 
-The main resource that manages all cron jobs for an account:
+A lightweight wrapper that adds cron functionality to any TransactionHandler:
 
 ```cadence
 access(all) resource CronHandler: FlowTransactionScheduler.TransactionHandler, ViewResolver.Resolver {
-    access(self) var jobs: @{UInt64: CronJob}
-    access(contract) var nextJobId: UInt64
-    access(self) var transactionToJob: {UInt64: UInt64}
+    access(all) let cronExpression: String
+    access(all) let cronSpec: FlowCronUtils.CronSpec
+    access(self) let wrappedHandlerCap: Capability<auth(FlowTransactionScheduler.Execute) &{FlowTransactionScheduler.TransactionHandler}>
 }
 ```
 
-**Key Responsibilities:**
+**Key Features:**
 
-- Creates and manages CronJob resources
-- Implements the TransactionHandler interface for execution
-- Maintains transaction-to-job mappings
-- Handles cleanup of completed jobs
+- Wraps any existing TransactionHandler
+- Stores cron expression and parsed spec
+- Implements automatic rescheduling logic
+- Provides metadata through ViewResolver interface
 
-### CronJob Resource
+### CronContext Struct
 
-Individual cron job containing scheduling information and execution state:
-
-```cadence
-access(all) resource CronJob: ViewResolver.Resolver {
-    access(all) let id: UInt64
-    access(all) let cronSpec: FlowCronUtils.CronSpec
-    access(contract) let wrappedHandlerCap: Capability<...>
-    access(all) var executionCount: UInt64
-    access(all) var lastExecution: UFix64?
-    access(all) var nextExecution: UFix64?
-    access(all) var futureExecution: UFix64?
-}
-```
-
-### CronJobContext Struct
-
-Immutable context passed with each execution containing all necessary information for rescheduling:
+Execution context passed with each scheduled transaction:
 
 ```cadence
-access(all) struct CronJobContext {
-    access(all) let jobId: UInt64
-    access(all) let cronSpec: FlowCronUtils.CronSpec
-    access(all) let cronHandlerCap: Capability<...>
-    access(all) let schedulerManagerCap: Capability<...>
-    access(all) let feeProviderCap: Capability<...>
-    access(all) let data: AnyStruct?
+access(all) struct CronContext {
+    access(all) let schedulerManagerCap: Capability<auth(FlowTransactionSchedulerUtils.Owner) &{FlowTransactionSchedulerUtils.Manager}>
+    access(all) let feeProviderCap: Capability<auth(FungibleToken.Withdraw) &FlowToken.Vault>
     access(all) let priority: FlowTransactionScheduler.Priority
     access(all) let executionEffort: UInt64
+    access(all) let wrappedData: AnyStruct?
+}
+```
+
+### CronHandlerInfo View
+
+Metadata view for querying cron handler information:
+
+```cadence
+access(all) struct CronHandlerInfo {
+    access(all) let cronExpression: String
+    access(all) let cronSpec: FlowCronUtils.CronSpec
+    access(all) let nextExecution: UInt64?
+    access(all) let wrappedHandlerType: String?
+    access(all) let wrappedHandlerUUID: UInt64?
 }
 ```
 
 ## How It Works
 
-### Job Scheduling Flow
+### Scheduling Flow
 
-1. **User Creates Handler**: Implements TransactionHandler interface with custom logic
-2. **Schedule Job**: Calls `scheduleJob` with cron expression and handler capability
-3. **Initial Scheduling**: System schedules two transactions (next and future execution)
-4. **Execution**: When timestamp arrives, `executeTransaction` is called
-5. **Rescheduling**: Before executing user code, system schedules the next future execution
-6. **User Logic**: Wrapped handler executes with provided data
-7. **Repeat**: Process continues indefinitely until cancelled
+1. **Create CronHandler**: Wrap your existing TransactionHandler with a cron expression
+2. **Store in Account**: Save the CronHandler resource in your storage
+3. **Schedule with Manager**: Use `scheduleCronHandler` helper to schedule initial executions
+4. **Automatic Rescheduling**: Each execution schedules the next one before running wrapped handler
+5. **Continuous Operation**: Runs indefinitely until manually cancelled
 
 ### Execution Sequence
 
 ```
 Time ----------->
      |
-     +-- Schedule Job
-     |   +-- Create CronJob resource
+     +-- Create & Schedule CronHandler
+     |   +-- Parse cron expression
      |   +-- Schedule transaction at T1 (next)
      |   +-- Schedule transaction at T2 (future)
+     |   +-- Return transaction IDs
      |
      +-- T1 arrives: Execute
-     |   +-- Schedule transaction at T3 (new future)
-     |   +-- Update state (T1->last, T2->next, T3->future)
-     |   +-- Execute user handler
+     |   +-- Validate capabilities
+     |   +-- Calculate T3 (new future)
+     |   +-- Check balance & withdraw fees
+     |   +-- Schedule transaction at T3
+     |   +-- Execute wrapped handler (may fail)
      |
      +-- T2 arrives: Execute
-     |   +-- Schedule transaction at T4 (new future)
-     |   +-- Update state (T2->last, T3->next, T4->future)
-     |   +-- Execute user handler
+     |   +-- Validate capabilities
+     |   +-- Calculate T4 (new future)
+     |   +-- Check balance & withdraw fees
+     |   +-- Schedule transaction at T4
+     |   +-- Execute wrapped handler (may fail)
      |
-     +-- ... continues
+     +-- ... continues until cancelled
 ```
 
-## Usage Guide
-
-### 1. Create Your Custom Handler
-
-First, you need a transaction handler to be executed recurringly, so create a new one implementing the TransactionHandler interface or use third party ones:
-
-```cadence
-import "FlowTransactionScheduler"
-
-access(all) contract MyHandler {
-    access(all) resource Handler: FlowTransactionScheduler.TransactionHandler {
-        access(FlowTransactionScheduler.Execute) 
-        fun executeTransaction(id: UInt64, data: AnyStruct?) {
-            // Your custom logic here
-            log("Executing scheduled task with data: ".concat(data.toString()))
-        }
-    }
-    
-    access(all) fun createHandler(): @Handler {
-        return <-create Handler()
-    }
-}
-```
-
-### 2. Setup and Save Handler
-
-```cadence
-import "MyHandler"
-
-transaction {
-    prepare(signer: auth(SaveValue) &Account) {
-        let handler <- MyHandler.createHandler()
-        signer.storage.save(<-handler, to: /storage/myHandler)
-    }
-}
-```
-
-### 3. Schedule a Cron Job
-
-```cadence
-import "FlowCron"
-import "FlowCronUtils"
-import "FlowTransactionScheduler"
-import "FlowTransactionSchedulerUtils"
-import "FlowToken"
-import "FungibleToken"
-
-transaction(
-    cronSpec: FlowCronUtils.CronSpec,
-    wrappedHandlerStoragePath: StoragePath,
-    data: AnyStruct?,
-    priority: FlowTransactionScheduler.Priority,
-    executionEffort: UInt64
-) {
-    prepare(signer: auth(...) &Account) { 
-        // Schedule the job (see ScheduleCronJob.cdc for full implementation)
-    }
-}
-```
-
-## FlowCronUtils - The Cron Expression Engine
+## Cron Expression Engine
 
 FlowCronUtils provides a highly optimized cron expression parser and scheduler using bitmask operations for efficiency.
 
@@ -274,80 +169,16 @@ monthMask: 0x1FFE              (all months)
 dowMask:   0x3E                (bits 1-5 = Mon-Fri)
 ```
 
-### Usage Patterns
+### Common Cron Patterns
 
-#### Option 1: Parse On-Chain
-
-```cadence
-// In a script
-import "FlowCronUtils"
-
-access(all) fun main(expression: String): FlowCronUtils.CronSpec? {
-    return FlowCronUtils.parse(expression: expression)
-}
-```
-
-Then use the result in your transaction:
-
-```cadence
-let cronSpec = FlowCronUtils.parse(expression: "0 9 * * 1-5")
-    ?? panic("Invalid expression")
-```
-
-#### Option 2: Pre-compute Off-Chain
-
-```javascript
-// JavaScript example for computing bitmasks
-function parseCronExpression(expression) {
-    const parts = expression.split(' ');
-    
-    return {
-        minMask: parseField(parts[0], 0, 59),
-        hourMask: parseField(parts[1], 0, 23),
-        domMask: parseField(parts[2], 1, 31),
-        monthMask: parseField(parts[3], 1, 12),
-        dowMask: parseField(parts[4], 0, 6),
-        domIsStar: parts[2] === '*',
-        dowIsStar: parts[4] === '*'
-    };
-}
-
-function parseField(field, min, max) {
-    if (field === '*') {
-        return (1n << BigInt(max - min + 1)) - 1n << BigInt(min);
-    }
-    
-    let mask = 0n;
-    const parts = field.split(',');
-    
-    for (const part of parts) {
-        if (part.includes('-')) {
-            const [start, end] = part.split('-').map(Number);
-            for (let i = start; i <= end; i++) {
-                mask |= 1n << BigInt(i);
-            }
-        } else if (part.includes('/')) {
-            // Handle step values
-            const [range, step] = part.split('/');
-            const [start, end] = range === '*' 
-                ? [min, max] 
-                : range.split('-').map(Number);
-            
-            for (let i = start; i <= end; i += Number(step)) {
-                mask |= 1n << BigInt(i);
-            }
-        } else {
-            mask |= 1n << BigInt(part);
-        }
-    }
-    
-    return mask;
-}
-
-// Example usage
-const spec = parseCronExpression("0 9 * * 1-5");
-// Use spec values in your transaction
-```
+- `* * * * *` - Every minute (use with caution)
+- `0 * * * *` - Every hour
+- `0 0 * * *` - Daily at midnight
+- `0 0 * * 0` - Weekly on Sunday
+- `0 0 1 * *` - Monthly on the 1st
+- `*/15 * * * *` - Every 15 minutes
+- `0 9-17 * * 1-5` - Hourly during business hours
+- `0 0,12 * * *` - Twice daily at midnight and noon
 
 ## License
 

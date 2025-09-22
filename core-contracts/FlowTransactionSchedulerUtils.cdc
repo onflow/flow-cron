@@ -60,6 +60,7 @@ access(all) contract FlowTransactionSchedulerUtils {
             fees: @FlowToken.Vault
         ): UInt64
         access(Owner) fun cancel(id: UInt64): @FlowToken.Vault
+        access(Owner) fun cleanup(): [UInt64]
         access(all) view fun getTransactionData(_ id: UInt64): FlowTransactionScheduler.TransactionData?
         access(all) view fun borrowTransactionHandlerForID(_ id: UInt64): &{FlowTransactionScheduler.TransactionHandler}?
         access(all) fun getHandlerTypeIdentifiers(): {String: [UInt64]}
