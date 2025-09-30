@@ -10,44 +10,123 @@ FlowCron leverages Flow's native transaction scheduling capabilities (FLIP-330) 
 
 - **Standard Cron Syntax**: Uses familiar 5-field cron expressions (minute, hour, day-of-month, month, day-of-week)
 - **Self-Perpetuating**: Jobs automatically reschedule themselves after each execution
-- **Fault Tolerant**: Double-buffering pattern ensures continuity even if wrapped handler fails
-- **Flexible Priority**: Support for High, Medium, and Low priority executions
-- **Cost Efficient**: Optimized bitmask operations minimize computation and storage
-- **View Resolver Integration**: Full support for querying job states and their wrapped handler metadata
+- **Double-Buffer Pattern**: Maintains two scheduled transactions (next + future) for continuous operation
+- **Fault Tolerant**: Wrapped handler failures don't stop the cron schedule
+- **Flexible Priority**: Supports High, Medium, and Low priority executions
+- **View Resolver Integration**: Full support for querying job states and metadata
 - **Distributed Design**: Each user controls their own CronHandler resources
 
-## Architecture
+## Quick Start
 
-### Core Design Principles
+### 1. Create a Transaction Handler
 
-1. **Distributed Ownership**: Each CronHandler is an independent resource owned by users
-2. **No Central State**: Leverages Manager's existing tracking instead of maintaining separate state
-3. **Double-Buffer Pattern**: Two transactions are always scheduled (next and future) to ensure continuity
-4. **Atomic Rescheduling**: New executions are scheduled before wrapped handler execution
-5. **Failure Isolation**: Wrapped handler failures don't stop the cron schedule
-
-## Core Components
-
-### CronHandler Resource
-
-A lightweight wrapper that adds cron functionality to any TransactionHandler:
+First, create a handler that implements the `TransactionHandler` interface:
 
 ```cadence
-access(all) resource CronHandler: FlowTransactionScheduler.TransactionHandler, ViewResolver.Resolver {
-    access(all) let cronExpression: String
-    access(all) let cronSpec: FlowCronUtils.CronSpec
-    access(self) let wrappedHandlerCap: Capability<auth(FlowTransactionScheduler.Execute) &{FlowTransactionScheduler.TransactionHandler}>
+import "FlowTransactionScheduler"
+
+access(all) resource MyTaskHandler: FlowTransactionScheduler.TransactionHandler {
+    access(FlowTransactionScheduler.Execute)
+    fun executeTransaction(id: UInt64, data: AnyStruct?) {
+        // Your recurring logic here
+        log("Cron job executed!")
+    }
 }
 ```
 
-**Key Features:**
+### 2. Wrap with CronHandler
 
-- Wraps any existing TransactionHandler
-- Stores cron expression and parsed spec
-- Implements automatic rescheduling logic
-- Provides metadata through ViewResolver interface
+Wrap your handler with FlowCron to add scheduling:
 
-### CronContext Struct
+```cadence
+import "FlowCron"
+
+// Store your task handler
+account.storage.save(<-create MyTaskHandler(), to: /storage/MyTaskHandler)
+
+// Create capability to your handler
+let handlerCap = account.capabilities.storage.issue<
+    auth(FlowTransactionScheduler.Execute) &{FlowTransactionScheduler.TransactionHandler}
+>(/storage/MyTaskHandler)
+
+// Create cron handler (runs every day at midnight)
+let cronHandler <- FlowCron.createCronHandler(
+    cronExpression: "0 0 * * *",
+    wrappedHandlerCap: handlerCap
+)
+
+// Store it
+account.storage.save(<-cronHandler, to: /storage/MyCronHandler)
+```
+
+### 3. Schedule Initial Execution
+
+Use the provided `ScheduleCronHandler` transaction to start:
+
+```bash
+flow transactions send cadence/transactions/ScheduleCronHandler.cdc \
+    --arg Path:/storage/MyCronHandler \
+    --arg 'Optional(String):null' \
+    --arg UInt8:2 \
+    --arg UInt64:100
+```
+
+### 4. Monitor & Control
+
+Query status:
+
+```bash
+flow scripts execute cadence/scripts/GetCronInfo.cdc \
+    --arg Address:0x... \
+    --arg Path:/storage/MyCronHandler
+```
+
+Cancel when needed:
+
+```bash
+flow transactions send cadence/transactions/CancelCronSchedule.cdc \
+    --arg Path:/storage/MyCronHandler
+```
+
+## Architecture
+
+### Core Components
+
+#### CronHandler Resource
+
+The main resource that wraps any `TransactionHandler` with cron functionality:
+
+```cadence
+access(all) resource CronHandler: FlowTransactionScheduler.TransactionHandler, ViewResolver.Resolver
+{
+    // Cron configuration
+    access(all) let cronExpression: String
+    access(all) let cronSpec: FlowCronUtils.CronSpec
+
+    // Wrapped handler
+    access(self) let wrappedHandlerCap: Capability<auth(FlowTransactionScheduler.Execute) &{FlowTransactionScheduler.TransactionHandler}>
+
+    // Scheduling state (internal)
+    access(self) var nextScheduledTransactionID: UInt64?
+    access(self) var futureScheduledTransactionID: UInt64?
+    access(self) var isScheduled: Bool
+
+    // TransactionHandler interface
+    access(FlowTransactionScheduler.Execute) fun executeTransaction(id: UInt64, data: AnyStruct?)
+
+    // Public getter methods (all view - read-only)
+    access(all) view fun getCronExpression(): String
+    access(all) view fun getCronSpec(): FlowCronUtils.CronSpec
+    access(all) view fun getNextScheduledTransactionID(): UInt64?
+    access(all) view fun getFutureScheduledTransactionID(): UInt64?
+
+    // ViewResolver methods
+    access(all) view fun getViews(): [Type]  // view: required by ViewResolver interface
+    access(all) fun resolveView(_ view: Type): AnyStruct?  // Not view: may delegate to wrapped handler
+}
+```
+
+#### CronContext Struct
 
 Execution context passed with each scheduled transaction:
 
@@ -61,125 +140,281 @@ access(all) struct CronContext {
 }
 ```
 
-### CronHandlerInfo View
+#### CronInfo View
 
 Metadata view for querying cron handler information:
 
 ```cadence
-access(all) struct CronHandlerInfo {
+access(all) struct CronInfo {
     access(all) let cronExpression: String
     access(all) let cronSpec: FlowCronUtils.CronSpec
     access(all) let nextExecution: UInt64?
+    access(all) let futureExecution: UInt64?
     access(all) let wrappedHandlerType: String?
     access(all) let wrappedHandlerUUID: UInt64?
 }
 ```
 
-## How It Works
+### Design Principles
 
-### Scheduling Flow
+#### 1. Double-Buffer Pattern
 
-1. **Create CronHandler**: Wrap your existing TransactionHandler with a cron expression
-2. **Store in Account**: Save the CronHandler resource in your storage
-3. **Schedule with Manager**: Use `scheduleCronHandler` helper to schedule initial executions
-4. **Automatic Rescheduling**: Each execution schedules the next one before running wrapped handler
-5. **Continuous Operation**: Runs indefinitely until manually cancelled
-
-### Execution Sequence
+FlowCron uses a **double-buffer scheduling pattern** to maintain continuous execution:
 
 ```
-Time ----------->
-     |
-     +-- Create & Schedule CronHandler
-     |   +-- Parse cron expression
-     |   +-- Schedule transaction at T1 (next)
-     |   +-- Schedule transaction at T2 (future)
-     |   +-- Return transaction IDs
-     |
-     +-- T1 arrives: Execute
-     |   +-- Validate capabilities
-     |   +-- Calculate T3 (new future)
-     |   +-- Check balance & withdraw fees
-     |   +-- Schedule transaction at T3
-     |   +-- Execute wrapped handler (may fail)
-     |
-     +-- T2 arrives: Execute
-     |   +-- Validate capabilities
-     |   +-- Calculate T4 (new future)
-     |   +-- Check balance & withdraw fees
-     |   +-- Schedule transaction at T4
-     |   +-- Execute wrapped handler (may fail)
-     |
-     +-- ... continues until cancelled
+Time ────────────────────────────────────>
+         │
+         ├── Next (T2)     ← Executes soon
+         │
+         └── Future (T3)   ← Backup/continuity
 ```
+
+**How it works:**
+
+1. **Initial Schedule**: You schedule a single transaction (T1) at **any time you choose**
+   - Can be the next cron time, or any custom timestamp
+   - Gives you flexibility to start cron jobs at specific moments (e.g., "start tomorrow at 9 AM")
+2. **T1 Executes**:
+   - **First**: Schedules BOTH Next (T2) and Future (T3) based on cron spec **from current time**
+   - **Then**: Runs your wrapped handler logic
+   - Double-buffer is now active BEFORE handler executes (safety guarantee)
+3. **T2 Executes**:
+   - **First**: Shifts Future (T3) → Next, schedules new Future (T4) based on cron spec
+   - **Then**: Runs your wrapped handler logic
+   - Maintains the double-buffer even if handler fails
+4. **Continues indefinitely** - each execution ensures two transactions are always scheduled, following the cron spec
+
+**Benefits:**
+
+- **Flexible Start**: Choose exactly when your cron job begins (next cron time, specific date, or custom timestamp)
+- **Reliability**: If one transaction fails to execute, the other ensures continuity
+- **No Gaps**: System always has a scheduled execution after the first run
+- **Smooth Operation**: Seamless transition between executions
+- **Automatic Recovery**: Even if scheduling temporarily fails (low funds), the existing buffered transaction keeps it running
+
+#### 2. Atomic Rescheduling
+
+- Rescheduling happens **before** wrapped handler execution
+- If wrapped handler fails, cron continues on schedule
+- State sync ensures accuracy even after cancellations
+
+#### 3. State Management with `syncSchedule()`
+
+The `syncSchedule()` function maintains consistency:
+
+- Clears stale transaction IDs (executed/cancelled/missing)
+- Updates `isScheduled` flag to control external scheduling
+- Ensures internal state matches scheduler reality
+
+#### 4. Distributed Ownership
+
+Each user owns their `CronHandler` resources:
+
+```
+┌─────────────────────────────────────┐
+│         User Account                │
+│                                     │
+│  /storage/MyCronHandler1            │
+│    └─> CronHandler                  │
+│          └─> wraps MyTaskHandler1   │
+│                                     │
+│  /storage/MyCronHandler2            │
+│    └─> CronHandler                  │
+│          └─> wraps MyTaskHandler2   │
+└─────────────────────────────────────┘
+```
+
+**Benefits:**
+
+- No central bottleneck or single point of failure
+- Users pay their own scheduling fees
+- Scales horizontally across all accounts
+- Permissionless as anyone can create cron jobs
+
+### How It Works: Execution Flow
+
+#### Initial Scheduling
+
+**Step 1: You start the cron job**
+
+- Schedule a single execution at any time you choose
+- Can be the next cron time, tomorrow at 9 AM, or any future moment
+- This gives you full control over when the cron job begins
+
+**Step 2: First execution (T1)**
+
+1. ⚠️ **Schedules future executions FIRST**
+   - Calculates next two times from cron expression: T2 and T3
+   - Schedules both transactions
+   - Double-buffer is now active
+2. **Runs your task logic**
+   - Executes your wrapped handler
+   - Even if this fails, cron continues (already scheduled!)
+
+**Result**: Two future executions are queued, cron job is self-sustaining
+
+#### Recurring Execution
+
+**Step 3: Subsequent executions (T2, T3, T4...)**
+
+1. ⚠️ **Maintains schedule FIRST**
+   - Checks which transactions are still pending
+   - Shifts the future execution to become the next one
+   - Schedules a new future execution based on cron expression
+   - Double-buffer is always maintained
+2. **Runs your task logic**
+   - Executes your wrapped handler
+   - Even if this fails, cron continues
+
+**Result**: Job runs indefinitely, always keeping two executions scheduled ahead
+
+#### Protection Against Double-Scheduling
+
+**If someone tries to schedule again while active:**
+
+- System detects the cron job is already running
+- Rejects the new scheduling attempt
+- Prevents conflicting contexts or duplicate executions
+- Emits a rejection event for monitoring
+
+**Result**: Data consistency is protected - one cron schedule per handler
 
 ## Cron Expression Engine
 
-FlowCronUtils provides a highly optimized cron expression parser and scheduler using bitmask operations for efficiency.
-
-### Cron Expression Format
+### Syntax
 
 Standard 5-field format:
+
 ```
-+----------+----------+----------+----------+----------+
-| minute   | hour     | day of   | month    | day of   |
-|          |          | month    |          | week     |
-| (0-59)   | (0-23)   | (1-31)   | (1-12)   | (0-6)    |
-|          |          |          |          | (0=Sun)  |
-+----------+----------+----------+----------+----------+
-|    *     |    *     |    *     |    *     |    *     |
-+----------+----------+----------+----------+----------+
+┌───────────── minute (0-59)
+│ ┌───────────── hour (0-23)
+│ │ ┌───────────── day of month (1-31)
+│ │ │ ┌───────────── month (1-12)
+│ │ │ │ ┌───────────── day of week (0-6, 0=Sunday)
+│ │ │ │ │
+* * * * *
 ```
 
-### Supported Operators
+### Operators
 
-- `*` - Wildcard (any value)
-- `,` - List separator (e.g., `1,3,5`)
-- `-` - Range (e.g., `1-5`)
-- `/` - Step values (e.g., `*/5`, `1-30/5`)
+- `*` - Any value (wildcard)
+- `,` - List separator: `1,3,5` means 1, 3, and 5
+- `-` - Range: `1-5` means 1, 2, 3, 4, 5
+- `/` - Step: `*/5` means every 5, `10-30/5` means 10, 15, 20, 25, 30
+
+### Common Patterns
+
+| Pattern | Description |
+|---------|-------------|
+| `* * * * *` | Every minute |
+| `*/5 * * * *` | Every 5 minutes |
+| `0 * * * *` | Every hour (on the hour) |
+| `0 0 * * *` | Daily at midnight |
+| `0 12 * * *` | Daily at noon |
+| `0 0 * * 0` | Weekly on Sunday at midnight |
+| `0 0 1 * *` | Monthly on the 1st at midnight |
+| `0 9-17 * * 1-5` | Hourly during business hours (9am-5pm, Mon-Fri) |
+| `*/15 9-17 * * 1-5` | Every 15 min during business hours |
+| `0 0,12 * * *` | Twice daily (midnight and noon) |
 
 ### Bitmask Implementation
 
-FlowCronUtils uses bitmasks for ultra-efficient storage and computation:
+FlowCronUtils uses **bitmasks** for ultra-efficient scheduling:
 
 ```cadence
 access(all) struct CronSpec {
     access(all) let minMask: UInt64   // bits 0-59 for minutes
     access(all) let hourMask: UInt32  // bits 0-23 for hours
-    access(all) let domMask: UInt32   // bits 1-31 for days
+    access(all) let domMask: UInt32   // bits 1-31 for day-of-month
     access(all) let monthMask: UInt16 // bits 1-12 for months
-    access(all) let dowMask: UInt8    // bits 0-6 for weekdays
+    access(all) let dowMask: UInt8    // bits 0-6 for day-of-week
+    access(all) let domIsStar: Bool   // day-of-month was "*"
+    access(all) let dowIsStar: Bool   // day-of-week was "*"
 }
 ```
 
-#### Why Bitmasks?
-
-1. **Space Efficiency**: Entire cron spec fits in ~15 bytes vs hundreds for arrays
-2. **O(1) Checking**: Bit operations are constant time
-3. **Cache Friendly**: All data fits in a single cache line
-4. **Gas Efficient**: Bitwise operations are the cheapest computations
-
-#### Example: "0 9,17 * * 1-5" (9 AM and 5 PM on weekdays)
+**Example: `0 9,17 * * 1-5` (9 AM and 5 PM on weekdays)**
 
 ```
-minMask:   0x0000000000000001  (bit 0 = minute 0)
-hourMask:  0x00020200          (bits 9,17 = hours 9,17)  
+minMask:   0x0000000000000001  (bit 0 set = minute 0)
+hourMask:  0x00020200          (bits 9,17 set = hours 9,17)
 domMask:   0xFFFFFFFE          (all days)
 monthMask: 0x1FFE              (all months)
-dowMask:   0x3E                (bits 1-5 = Mon-Fri)
+dowMask:   0x3E                (bits 1-5 set = Mon-Fri)
 ```
 
-### Common Cron Patterns
+**Benefits:**
+- **Space**: ~15 bytes vs hundreds for arrays
+- **Speed**: O(1) bit check vs O(n) array scan
+- **Gas**: Bitwise operations are cheapest on EVM/Cadence
 
-- `* * * * *` - Every minute (use with caution)
-- `0 * * * *` - Every hour
-- `0 0 * * *` - Daily at midnight
-- `0 0 * * 0` - Weekly on Sunday
-- `0 0 1 * *` - Monthly on the 1st
-- `*/15 * * * *` - Every 15 minutes
-- `0 9-17 * * 1-5` - Hourly during business hours
-- `0 0,12 * * *` - Twice daily at midnight and noon
+## Events
 
-## License
+FlowCron emits events for monitoring:
 
-This project is licensed under the MIT License.
+```cadence
+/// Emitted when cron execution succeeds
+access(all) event CronScheduleExecuted(handlerUUID: UInt64, txID: UInt64)
+
+/// Emitted when external scheduling is rejected (already active)
+access(all) event CronScheduleRejected(handlerUUID: UInt64, txID: UInt64)
+
+/// Emitted when scheduling fails due to insufficient funds
+access(all) event CronScheduleFailed(handlerUUID: UInt64, requiredAmount: UFix64, availableAmount: UFix64)
+
+/// Emitted when fee estimation fails
+access(all) event CronEstimationFailed(handlerUUID: UInt64)
+```
+
+## API Reference
+
+### Creating a CronHandler
+
+```cadence
+FlowCron.createCronHandler(
+    cronExpression: String,
+    wrappedHandlerCap: Capability<auth(FlowTransactionScheduler.Execute) &{FlowTransactionScheduler.TransactionHandler}>
+): @CronHandler
+```
+
+### CronHandler Methods
+
+Getter methods are `view` functions (read-only, no state mutations):
+
+```cadence
+// Get cron expression and spec (view)
+access(all) view fun getCronExpression(): String
+access(all) view fun getCronSpec(): FlowCronUtils.CronSpec
+
+// Get scheduled transaction IDs (view - useful for cancellation)
+access(all) view fun getNextScheduledTransactionID(): UInt64?
+access(all) view fun getFutureScheduledTransactionID(): UInt64?
+
+// ViewResolver methods
+access(all) view fun getViews(): [Type]  // view: required by interface
+access(all) fun resolveView(_ view: Type): AnyStruct?  // Not view: may delegate
+```
+
+### Querying Status
+
+```cadence
+let cronInfo = handler.resolveView(Type<FlowCron.CronInfo>()) as! FlowCron.CronInfo
+
+// Access fields:
+// - cronInfo.cronExpression: String
+// - cronInfo.cronSpec: FlowCronUtils.CronSpec
+// - cronInfo.nextExecution: UInt64?
+// - cronInfo.futureExecution: UInt64?
+// - cronInfo.wrappedHandlerType: String?
+// - cronInfo.wrappedHandlerUUID: UInt64?
+```
+
+## Examples
+
+Complete working examples available in the repository:
+
+- `cadence/transactions/ScheduleCronHandler.cdc` - Initial scheduling
+- `cadence/transactions/CancelCronSchedule.cdc` - Cancellation
+- `cadence/scripts/GetCronInfo.cdc` - Query status
+- `cadence/scripts/GetCronScheduleStatus.cdc` - Detailed status
+- `cadence/tests/mocks/` - Counter example (test infrastructure)

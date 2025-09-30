@@ -9,7 +9,8 @@ import "FungibleToken"
 transaction(cronHandlerStoragePath: StoragePath) {
     let manager: auth(FlowTransactionSchedulerUtils.Owner) &{FlowTransactionSchedulerUtils.Manager}
     let feeReceiver: &{FungibleToken.Receiver}
-    let transactionIDs: [UInt64]
+    let nextID: UInt64?
+    let futureID: UInt64?
 
     prepare(signer: auth(BorrowValue, IssueStorageCapabilityController, SaveValue) &Account) {
         // Ensure Manager exists
@@ -30,29 +31,35 @@ transaction(cronHandlerStoragePath: StoragePath) {
         let cronHandler = signer.storage.borrow<&FlowCron.CronHandler>(from: cronHandlerStoragePath)
             ?? panic("CronHandler not found at specified path")
 
-        self.transactionIDs = []
-        if let nextID = cronHandler.nextScheduledTransactionID {
-            self.transactionIDs.append(nextID)
-        }
-        if let futureID = cronHandler.futureScheduledTransactionID {
-            self.transactionIDs.append(futureID)
-        }
+        self.nextID = cronHandler.getNextScheduledTransactionID()
+        self.futureID = cronHandler.getFutureScheduledTransactionID()
     }
 
     execute {
         var cancelledCount = 0
 
-        for id in self.transactionIDs {
+        // Cancel next scheduled transaction
+        if let id = self.nextID {
             if let txData = FlowTransactionScheduler.getTransactionData(id: id) {
                 if txData.status == FlowTransactionScheduler.Status.Scheduled {
                     let refund <- self.manager.cancel(id: id)
                     self.feeReceiver.deposit(from: <-refund)
                     cancelledCount = cancelledCount + 1
-                    log("Cancelled transaction: ".concat(id.toString()))
                 }
             }
         }
 
-        log("Cancelled ".concat(cancelledCount.toString()).concat(" of ").concat(self.transactionIDs.length.toString()).concat(" transactions"))
+        // Cancel future scheduled transaction
+        if let id = self.futureID {
+            if let txData = FlowTransactionScheduler.getTransactionData(id: id) {
+                if txData.status == FlowTransactionScheduler.Status.Scheduled {
+                    let refund <- self.manager.cancel(id: id)
+                    self.feeReceiver.deposit(from: <-refund)
+                    cancelledCount = cancelledCount + 1
+                }
+            }
+        }
+
+        log("Cancelled ".concat(cancelledCount.toString()).concat(" of 2 transactions"))
     }
 }

@@ -45,8 +45,8 @@ access(all) contract FlowCron {
         access(self) let wrappedHandlerCap: Capability<auth(FlowTransactionScheduler.Execute) &{FlowTransactionScheduler.TransactionHandler}>
         
         /// Internal state to track our scheduled transactions
-        access(all) var nextScheduledTransactionID: UInt64?
-        access(all) var futureScheduledTransactionID: UInt64?
+        access(self) var nextScheduledTransactionID: UInt64?
+        access(self) var futureScheduledTransactionID: UInt64?
         
         /// Track if this handler is scheduled to reject subsequent scheduling attempts
         access(self) var isScheduled: Bool
@@ -250,17 +250,32 @@ access(all) contract FlowCron {
             }
         }
 
+        /// Returns the cron expression
+        access(all) view fun getCronExpression(): String {
+            return self.cronExpression
+        }
+
         /// Returns a copy of the cron spec for use in calculations
-        access(all) fun getCronSpec(): FlowCronUtils.CronSpec {
+        access(all) view fun getCronSpec(): FlowCronUtils.CronSpec {
             return self.cronSpec
         }
-        
+
+        /// Returns the next scheduled transaction ID if one exists
+        access(all) view fun getNextScheduledTransactionID(): UInt64? {
+            return self.nextScheduledTransactionID
+        }
+
+        /// Returns the future scheduled transaction ID if one exists
+        access(all) view fun getFutureScheduledTransactionID(): UInt64? {
+            return self.futureScheduledTransactionID
+        }
+
         access(all) view fun getViews(): [Type] {
             var views: [Type] = [
                 Type<MetadataViews.Display>(),
                 Type<CronInfo>()
             ]
-            
+
             if let handler = self.wrappedHandlerCap.borrow() {
                 views = views.concat(handler.getViews())
             }

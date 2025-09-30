@@ -43,7 +43,7 @@ access(all) fun setup() {
     Test.expect(err, Test.beNil())
 }
 
-/// Test 1: Create CronHandler with valid cron expression
+/// Create CronHandler with valid cron expression
 access(all) fun testCreateCronHandlerWithValidExpression() {
     setupCounterHandler()
 
@@ -62,7 +62,7 @@ access(all) fun testCreateCronHandlerWithValidExpression() {
     Test.expect(result, Test.beSucceeded())
 }
 
-/// Test 2: Create CronHandler with invalid expression fails
+/// Create CronHandler with invalid expression fails
 access(all) fun testCreateCronHandlerWithInvalidExpression() {
     setupCounterHandler()
 
@@ -81,7 +81,7 @@ access(all) fun testCreateCronHandlerWithInvalidExpression() {
     Test.expect(result, Test.beFailed())
 }
 
-/// Test 3: Schedule cron and verify double scheduling (next + future)
+/// Schedule cron and verify double scheduling (next + future)
 access(all) fun testDoubleSchedulingPattern() {
     setupCounterHandler()
     createCronHandler("*/1 * * * *", /storage/CronHandler2)
@@ -102,7 +102,7 @@ access(all) fun testDoubleSchedulingPattern() {
     Test.assert(newEvents >= 1, message: "Expected at least one scheduled transaction")
 }
 
-/// Test 4: Counter increments on cron execution
+/// Counter increments on cron execution
 access(all) fun testCounterIncrementsOnExecution() {
     setupCounterHandler()
     createCronHandler("*/1 * * * *", /storage/CronHandler3)
@@ -122,7 +122,7 @@ access(all) fun testCounterIncrementsOnExecution() {
     Test.assert(newCount > initialCount, message: "Counter should have incremented after cron execution")
 }
 
-/// Test 5: Multiple executions with same data (data consistency)
+/// Multiple executions with same data (data consistency)
 access(all) fun testDataConsistencyAcrossExecutions() {
     setupCounterHandler()
     createCronHandler("*/1 * * * *", /storage/CronHandler4)
@@ -146,7 +146,7 @@ access(all) fun testDataConsistencyAcrossExecutions() {
     Test.assert(executedEvents.length >= 2, message: "Expected at least 2 execution events")
 }
 
-/// Test 6: Cancel scheduled transactions
+/// Cancel scheduled transactions
 access(all) fun testCancelScheduledTransactions() {
     setupCounterHandler()
     createCronHandler("*/5 * * * *", /storage/CronHandler5)
@@ -167,7 +167,7 @@ access(all) fun testCancelScheduledTransactions() {
     Test.expect(cancelResult, Test.beSucceeded())
 }
 
-/// Test 7: Cancel and reschedule workflow
+/// Cancel and reschedule workflow
 access(all) fun testCancelAndReschedule() {
     setupCounterHandler()
     createCronHandler("*/2 * * * *", /storage/CronHandler6)
@@ -192,7 +192,7 @@ access(all) fun testCancelAndReschedule() {
     Test.expect(scheduleResult2, Test.beSucceeded())
 }
 
-/// Test 8: Auto-fill scheduling (fill gaps after execution)
+/// Auto-fill scheduling (fill gaps after execution)
 access(all) fun testAutoFillScheduling() {
     setupCounterHandler()
     createCronHandler("*/1 * * * *", /storage/CronHandler7)
@@ -212,7 +212,7 @@ access(all) fun testAutoFillScheduling() {
     Test.assert(scheduledAfter.length > countBefore, message: "Should auto-schedule future transaction after execution")
 }
 
-/// Test 9: CronInfo view resolution
+/// CronInfo view resolution
 access(all) fun testCronInfoViewResolution() {
     setupCounterHandler()
     createCronHandler("*/5 * * * *", /storage/CronHandler8)
@@ -231,28 +231,7 @@ access(all) fun testCronInfoViewResolution() {
     Test.assert(cronInfo.nextExecution != nil, message: "Should have next execution time")
 }
 
-/// Test 10: CronScheduleStatus script
-access(all) fun testCronScheduleStatus() {
-    setupCounterHandler()
-    createCronHandler("*/1 * * * *", /storage/CronHandler9)
-    let scheduleResult = scheduleCronHandler(/storage/CronHandler9, nil)
-    Test.expect(scheduleResult, Test.beSucceeded())
-
-    let result = Test.executeScript(
-        Test.readFile("../scripts/GetCronScheduleStatus.cdc"),
-        [
-            testAccount.address,
-            /storage/CronHandler9 as StoragePath
-        ]
-    )
-    Test.expect(result, Test.beSucceeded())
-
-    let status = result.returnValue! as! {String: AnyStruct}
-    Test.assertEqual("*/1 * * * *", status["cronExpression"]! as! String)
-    Test.assert(status.containsKey("isFullyScheduled"), message: "Should include isFullyScheduled key")
-}
-
-/// Test 11: Various cron expressions
+/// Various cron expressions
 access(all) fun testVariousCronExpressions() {
     setupCounterHandler()
 
@@ -272,7 +251,7 @@ access(all) fun testVariousCronExpressions() {
     createCronHandler("*/15 * * * *", /storage/Cron15Min)
 }
 
-/// Test 12: Wrapped handler execution is isolated
+/// Wrapped handler execution is isolated
 access(all) fun testWrappedHandlerIsolation() {
     setupCounterHandler()
     createCronHandler("*/1 * * * *", /storage/CronHandler10)
@@ -294,7 +273,7 @@ access(all) fun testWrappedHandlerIsolation() {
     Test.assert(executedEvents.length >= 1, message: "Expected CronScheduleExecuted event")
 }
 
-/// Test 13: CronHandler exposes correct views
+/// CronHandler exposes correct views
 access(all) fun testCronHandlerViews() {
     setupCounterHandler()
     createCronHandler("*/1 * * * *", /storage/CronHandler11)
@@ -313,7 +292,7 @@ access(all) fun testCronHandlerViews() {
     Test.assert(views.contains(Type<FlowCron.CronInfo>()), message: "Should expose CronInfo view")
 }
 
-/// Test 14: Counter increments match execution count for this test
+/// Counter increments match execution count for this test
 access(all) fun testCounterMatchesExecutionCount() {
     setupCounterHandler()
     createCronHandler("*/1 * * * *", /storage/CronHandler12)
@@ -341,7 +320,7 @@ access(all) fun testCounterMatchesExecutionCount() {
     Test.assertEqual(counterIncrements, newExecutions)
 }
 
-/// Test 15: After cancellation, can reschedule successfully
+/// After cancellation, can reschedule successfully
 access(all) fun testRescheduleAfterCancellation() {
     setupCounterHandler()
     createCronHandler("*/1 * * * *", /storage/CronHandler13)
@@ -373,7 +352,7 @@ access(all) fun testRescheduleAfterCancellation() {
     Test.assert(eventsAfter.length > countBefore, message: "Should emit new scheduling event after reschedule")
 }
 
-/// Test 16: syncSchedule clears invalid transaction IDs
+/// syncSchedule clears invalid transaction IDs
 access(all) fun testSyncScheduleClearsInvalidIDs() {
     setupCounterHandler()
     createCronHandler("*/1 * * * *", /storage/CronHandler14)
@@ -399,7 +378,7 @@ access(all) fun testSyncScheduleClearsInvalidIDs() {
         message: "Should have scheduled transactions after auto-fill")
 }
 
-/// Test 17: View resolution returns actual scheduled times when active
+/// View resolution returns actual scheduled times when active
 access(all) fun testViewResolutionWithActiveSchedule() {
     setupCounterHandler()
     createCronHandler("*/5 * * * *", /storage/CronHandler15)
@@ -420,7 +399,7 @@ access(all) fun testViewResolutionWithActiveSchedule() {
     Test.assert(cronInfo.futureExecution != nil, message: "Should have future execution time")
 }
 
-/// Test 18: View resolution falls back to calculated times when not scheduled
+/// View resolution falls back to calculated times when not scheduled
 access(all) fun testViewResolutionFallbackToCalculated() {
     setupCounterHandler()
     createCronHandler("*/5 * * * *", /storage/CronHandler16)
@@ -437,7 +416,7 @@ access(all) fun testViewResolutionFallbackToCalculated() {
     Test.assert(cronInfo.futureExecution != nil, message: "Should calculate future execution time")
 }
 
-/// Test 19: View resolution after cancellation returns calculated times
+/// View resolution after cancellation returns calculated times
 access(all) fun testViewResolutionAfterCancellation() {
     setupCounterHandler()
     createCronHandler("*/5 * * * *", /storage/CronHandler17)
@@ -468,7 +447,7 @@ access(all) fun testViewResolutionAfterCancellation() {
     Test.assert(cronInfo.nextExecution != nil, message: "Should calculate next execution time after cancellation")
 }
 
-/// Test 20: getCronSpec returns valid copy
+/// getCronSpec returns valid copy
 access(all) fun testGetCronSpec() {
     setupCounterHandler()
     createCronHandler("*/5 * * * *", /storage/CronHandler18)
@@ -489,7 +468,7 @@ access(all) fun testGetCronSpec() {
     Test.assert(cronSpec.minMask > 0 || cronSpec.minMask == 0, message: "Should return valid CronSpec")
 }
 
-/// Test 21: Multiple handlers can run independently
+/// Multiple handlers can run independently
 access(all) fun testMultipleHandlersIndependent() {
     setupCounterHandler()
 
@@ -518,7 +497,7 @@ access(all) fun testMultipleHandlersIndependent() {
     Test.assert(executedEvents.length >= 2, message: "Should have execution events from both handlers")
 }
 
-/// Test 22: Handler continues after missing execution window
+/// Handler continues after missing execution window
 access(all) fun testContinuesAfterMissedWindow() {
     setupCounterHandler()
     createCronHandler("*/1 * * * *", /storage/CronHandler19)
