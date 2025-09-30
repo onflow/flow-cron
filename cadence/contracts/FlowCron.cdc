@@ -6,13 +6,32 @@ import "FungibleToken"
 import "ViewResolver"
 import "MetadataViews"
 
-/// FlowCron: A handler that wraps any other handler adding cron scheduling functionality.
+/// FlowCron: Wraps any TransactionHandler with cron scheduling functionality.
+///
+/// FEATURES:
+/// - Deterministic scheduling with consistent execution context
+/// - Double scheduling pattern (next + future) for reliability
+/// - Automatic gap-filling when transactions are missed
+/// - Strict data consistency - rejects rescheduling once active
+///
+/// LIFECYCLE:
+/// 1. Create: FlowCron.createCronHandler(expression, wrappedCap)
+/// 2. Schedule: Use Flow scheduler with CronContext as data parameter
+/// 3. Execute: Automatic execution with self-rescheduling
+/// 4. Stop: Cancel both scheduled transactions
+/// 5. Restart: Schedule again (allowed after all canceled)
+///
+/// DATA CONSISTENCY:
+/// Once scheduled, the handler locks to the initial CronContext.
+/// All executions use the same context (fees, priority, wrapped data).
+/// To change parameters, cancel all transactions first.
 access(all) contract FlowCron {
     
     /// Events
-    access(all) event CronExecuted(handlerUUID: UInt64, txID: UInt64)
-    access(all) event CronRejected(handlerUUID: UInt64, txID: UInt64)
-    access(all) event CronFailed(handlerUUID: UInt64, requiredAmount: UFix64, availableAmount: UFix64)
+    access(all) event CronScheduleExecuted(handlerUUID: UInt64, txID: UInt64)
+    access(all) event CronScheduleRejected(handlerUUID: UInt64, txID: UInt64)
+    access(all) event CronScheduleFailed(handlerUUID: UInt64, requiredAmount: UFix64, availableAmount: UFix64)
+    access(all) event CronEstimationFailed(handlerUUID: UInt64)
     
     /// CronHandler resource wraps any TransactionHandler with cron scheduling functionality
     access(all) resource CronHandler: FlowTransactionScheduler.TransactionHandler, ViewResolver.Resolver {
@@ -60,7 +79,7 @@ access(all) contract FlowCron {
                 // Reject subsequent scheduling once handler is scheduled
                 // This ensures that the handler is not scheduled multiple times with different data
                 if self.isScheduled {
-                    emit CronRejected(handlerUUID: self.uuid, txID: id)
+                    emit CronScheduleRejected(handlerUUID: self.uuid, txID: id)
                     return
                 }
             }
@@ -70,12 +89,12 @@ access(all) contract FlowCron {
             // Ensure double scheduling filling the schedule with the next and future transactions if needed
             self.fillSchedule(context: context)
             
-            // Execute wrapped handler last so that everything is synchronized and no race conditions occur
+            // Execute wrapped handler last to ensure cron scheduling completes first
             let wrappedHandler = self.wrappedHandlerCap.borrow() ?? panic("Cannot borrow wrapped handler capability")
             wrappedHandler.executeTransaction(id: id, data: context.wrappedData)
             
             // Emit event only after successful execution
-            emit CronExecuted(handlerUUID: self.uuid, txID: id)
+            emit CronScheduleExecuted(handlerUUID: self.uuid, txID: id)
         }
 
         /// Syncs internal schedule state with external transaction scheduler
@@ -132,7 +151,7 @@ access(all) contract FlowCron {
             }
         }
         
-        /// Fills the schedule with the next and future transactions
+        /// Ensures double scheduling by filling gaps in next/future transactions
         access(self) fun fillSchedule(context: CronContext) {
             // Check what we need to schedule
             let needsNext = self.nextScheduledTransactionID == nil
@@ -178,7 +197,7 @@ access(all) contract FlowCron {
                         self.nextScheduledTransactionID = transactionId
                     } else {
                         // Not enough funds
-                        emit CronFailed(
+                        emit CronScheduleFailed(
                             handlerUUID: self.uuid,
                             requiredAmount: requiredFee,
                             availableAmount: feeVault.balance
@@ -186,11 +205,7 @@ access(all) contract FlowCron {
                     }
                 } else {
                     // Fee estimation failed
-                    emit CronFailed(
-                        handlerUUID: self.uuid,
-                        requiredAmount: 0.0,
-                        availableAmount: feeVault.balance
-                    )
+                    emit CronEstimationFailed(handlerUUID: self.uuid)
                 }
             }
             
@@ -222,7 +237,7 @@ access(all) contract FlowCron {
                         self.futureScheduledTransactionID = transactionId
                     } else {
                         // Not enough funds
-                        emit CronFailed(
+                        emit CronScheduleFailed(
                             handlerUUID: self.uuid,
                             requiredAmount: requiredFee,
                             availableAmount: feeVault.balance
@@ -230,11 +245,7 @@ access(all) contract FlowCron {
                     }
                 } else {
                     // Fee estimation failed
-                    emit CronFailed(
-                        handlerUUID: self.uuid,
-                        requiredAmount: 0.0,
-                        availableAmount: feeVault.balance
-                    )
+                    emit CronEstimationFailed(handlerUUID: self.uuid)
                 }
             }
         }
@@ -310,13 +321,19 @@ access(all) contract FlowCron {
         }
     }
     
-    /// View structure for cron metadata
+    /// View structure exposing cron handler metadata and schedule information
     access(all) struct CronInfo {
+        /// The original cron expression string
         access(all) let cronExpression: String
+        /// Parsed cron specification for execution
         access(all) let cronSpec: FlowCronUtils.CronSpec
+        /// Unix timestamp of next scheduled execution
         access(all) let nextExecution: UInt64?
+        /// Unix timestamp of future scheduled execution
         access(all) let futureExecution: UInt64?
+        /// Type identifier of wrapped handler
         access(all) let wrappedHandlerType: String?
+        /// UUID of wrapped handler resource
         access(all) let wrappedHandlerUUID: UInt64?
         
         init(
@@ -341,11 +358,6 @@ access(all) contract FlowCron {
         cronExpression: String,
         wrappedHandlerCap: Capability<auth(FlowTransactionScheduler.Execute) &{FlowTransactionScheduler.TransactionHandler}>
     ): @CronHandler {
-        pre {
-            cronExpression.length > 0: "Cron expression cannot be empty"
-            wrappedHandlerCap.check(): "Invalid wrapped handler capability"
-        }
-        
         return <- create CronHandler(
             cronExpression: cronExpression,
             wrappedHandlerCap: wrappedHandlerCap
