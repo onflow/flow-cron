@@ -28,4 +28,9 @@ access(all) contract Counter {
     view access(all) fun getCount(): Int {
         return self.count
     }
+
+    // Public function to reset the counter
+    access(all) fun reset() {
+        self.count = 0
+    }
 }
