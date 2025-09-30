@@ -59,7 +59,7 @@ access(all) contract FlowCron {
                 cronExpression.length > 0: "Cron expression cannot be empty"
                 wrappedHandlerCap.check(): "Invalid wrapped handler capability provided"
             }
-            
+
             self.cronExpression = cronExpression
             self.cronSpec = FlowCronUtils.parse(expression: cronExpression) ?? panic("Invalid cron expression: ".concat(cronExpression))
             self.wrappedHandlerCap = wrappedHandlerCap
@@ -160,12 +160,12 @@ access(all) contract FlowCron {
             if !needsNext && !needsFuture {
                 return
             }
-            
+
             // Get current time and calculate next and future execution time from cron spec
             let currentTime = UInt64(getCurrentBlock().timestamp)
-            let nextTime = FlowCronUtils.nextTick(spec: self.cronSpec, afterUnix: currentTime) ?? panic("Cannot find next execution time for cron expression")   
+            let nextTime = FlowCronUtils.nextTick(spec: self.cronSpec, afterUnix: currentTime) ?? panic("Cannot find next execution time for cron expression")
             let futureTime = FlowCronUtils.nextTick(spec: self.cronSpec, afterUnix: nextTime) ?? panic("Cannot find future execution time for cron expression")
-            
+
             // Borrow capabilities we'll need
             let schedulerManager = context.schedulerManagerCap.borrow() ?? panic("Cannot borrow scheduler manager capability")
             let feeVault = context.feeProviderCap.borrow() ?? panic("Cannot borrow fee provider capability")
@@ -249,6 +249,11 @@ access(all) contract FlowCron {
                 }
             }
         }
+
+        /// Returns a copy of the cron spec for use in calculations
+        access(all) fun getCronSpec(): FlowCronUtils.CronSpec {
+            return self.cronSpec
+        }
         
         access(all) view fun getViews(): [Type] {
             var views: [Type] = [
@@ -272,12 +277,37 @@ access(all) contract FlowCron {
                         thumbnail: MetadataViews.HTTPFile(url: "")
                     )
                 case Type<CronInfo>():
-                    let currentTime = UInt64(getCurrentBlock().timestamp)
-                    let nextExecution = FlowCronUtils.nextTick(spec: self.cronSpec, afterUnix: currentTime)
+                    // Check actual scheduled transaction times instead of calculating from cron spec
+                    // This ensures we return accurate state even if transactions were cancelled
+                    var nextExecution: UInt64? = nil
                     var futureExecution: UInt64? = nil
-                    if let next = nextExecution {
-                        futureExecution = FlowCronUtils.nextTick(spec: self.cronSpec, afterUnix: next)
+
+                    // Try to get actual scheduled transaction times
+                    if let nextID = self.nextScheduledTransactionID {
+                        if let txData = FlowTransactionScheduler.getTransactionData(id: nextID) {
+                            if txData.status == FlowTransactionScheduler.Status.Scheduled {
+                                nextExecution = UInt64(txData.scheduledTimestamp)
+                            }
+                        }
                     }
+
+                    if let futureID = self.futureScheduledTransactionID {
+                        if let txData = FlowTransactionScheduler.getTransactionData(id: futureID) {
+                            if txData.status == FlowTransactionScheduler.Status.Scheduled {
+                                futureExecution = UInt64(txData.scheduledTimestamp)
+                            }
+                        }
+                    }
+
+                    // Fall back to calculated times if no active scheduled transactions
+                    if nextExecution == nil && futureExecution == nil {
+                        let currentTime = UInt64(getCurrentBlock().timestamp)
+                        nextExecution = FlowCronUtils.nextTick(spec: self.cronSpec, afterUnix: currentTime)
+                        if let next = nextExecution {
+                            futureExecution = FlowCronUtils.nextTick(spec: self.cronSpec, afterUnix: next)
+                        }
+                    }
+
                     return CronInfo(
                         cronExpression: self.cronExpression,
                         cronSpec: self.cronSpec,

@@ -10,7 +10,7 @@ import "FlowCronUtils"
 transaction(
     cronHandlerStoragePath: StoragePath,
     wrappedData: AnyStruct?,
-    priority: FlowTransactionScheduler.Priority,
+    priority: UInt8,
     executionEffort: UInt64
 ) {
     let manager: auth(FlowTransactionSchedulerUtils.Owner) &{FlowTransactionSchedulerUtils.Manager}
@@ -32,17 +32,16 @@ transaction(
             from: FlowTransactionSchedulerUtils.managerStoragePath
         ) ?? panic("Cannot borrow manager")
 
-        // Borrow cron handler to get cron info
+        // Borrow cron handler to get cron spec
         let cronHandler = signer.storage.borrow<&FlowCron.CronHandler>(from: cronHandlerStoragePath)
             ?? panic("CronHandler not found at specified path")
 
-        // Get CronInfo from resolved view
-        let cronInfo = cronHandler.resolveView(Type<FlowCron.CronInfo>()) as? FlowCron.CronInfo
-            ?? panic("Cannot resolve CronInfo view")
+        // Get a copy of the cron spec via getter function
+        let cronSpec = cronHandler.getCronSpec()
 
         // Calculate next execution time
         let currentTime = UInt64(getCurrentBlock().timestamp)
-        self.nextExecutionTime = FlowCronUtils.nextTick(spec: cronInfo.cronSpec, afterUnix: currentTime)
+        self.nextExecutionTime = FlowCronUtils.nextTick(spec: cronSpec, afterUnix: currentTime)
             ?? panic("Cannot find next execution time for cron expression")
 
         // Create capabilities for CronContext
@@ -62,7 +61,7 @@ transaction(
         self.context = FlowCron.CronContext(
             schedulerManagerCap: self.managerCap,
             feeProviderCap: self.feeProviderCap,
-            priority: priority,
+            priority: FlowTransactionScheduler.Priority(rawValue: priority)!,
             executionEffort: executionEffort,
             wrappedData: wrappedData
         )
@@ -71,7 +70,7 @@ transaction(
         let estimate = FlowTransactionScheduler.estimate(
             data: self.context,
             timestamp: UFix64(self.nextExecutionTime),
-            priority: priority,
+            priority: FlowTransactionScheduler.Priority(rawValue: priority)!,
             executionEffort: executionEffort
         )
 
@@ -93,7 +92,7 @@ transaction(
             handlerCap: self.cronHandlerCap,
             data: self.context,
             timestamp: UFix64(self.nextExecutionTime),
-            priority: priority,
+            priority: FlowTransactionScheduler.Priority(rawValue: priority)!,
             executionEffort: executionEffort,
             fees: <-self.fees
         )
