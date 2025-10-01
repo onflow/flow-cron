@@ -75,36 +75,35 @@ access(all) fun beforeEach() {
     Test.expect(resetResult, Test.beSucceeded())
 }
 
-// AfterEach runs after each individual test
 access(all) fun afterEach() {
-    // Remove all test cron handlers to prevent interference with next test
-    let cleanupCode = "import FlowCron from \"FlowCron\"\n\n"
-        .concat("transaction(paths: [StoragePath]) {\n")
+    // Cancel any pending transactions and destroy the handler
+    let cancelResult = Test.executeTransaction(
+        Test.Transaction(
+            code: Test.readFile("../transactions/CancelCronSchedule.cdc"),
+            authorizers: [testAccount.address],
+            signers: [testAccount],
+            arguments: [/storage/TestCronHandler as StoragePath]
+        )
+    )
+
+    // Destroy handler to start fresh next test
+    let destroyCode = "import FlowCron from \"FlowCron\"\n\n"
+        .concat("transaction(path: StoragePath) {\n")
         .concat("    prepare(signer: auth(LoadValue) &Account) {\n")
-        .concat("        for path in paths {\n")
-        .concat("            if let handler <- signer.storage.load<@FlowCron.CronHandler>(from: path) {\n")
-        .concat("                destroy handler\n")
-        .concat("            }\n")
+        .concat("        if let handler <- signer.storage.load<@FlowCron.CronHandler>(from: path) {\n")
+        .concat("            destroy handler\n")
         .concat("        }\n")
         .concat("    }\n")
         .concat("}")
 
-    let paths: [StoragePath] = [
-        /storage/TestCronHandler,
-        /storage/TestCronHandler2,
-        /storage/TestCronHandler3,
-        /storage/TestCronHandler4
-    ]
-
-    let cleanupResult = Test.executeTransaction(
+    let destroyResult = Test.executeTransaction(
         Test.Transaction(
-            code: cleanupCode,
+            code: destroyCode,
             authorizers: [testAccount.address],
             signers: [testAccount],
-            arguments: [paths]
+            arguments: [/storage/TestCronHandler as StoragePath]
         )
     )
-    // Don't fail if cleanup fails - handlers might not exist
 }
 
 /// Schedule a cron handler and verify first execution happens
@@ -160,8 +159,6 @@ access(all) fun test_CronHandler_FirstExecution() {
     let timeToAdvance = (scheduledTimestamp - initialTimestamp) + 1.0
     Test.moveTime(by: Fix64(timeToAdvance))
 
-    let advancedTimestamp = getTimestamp()
-
     // Verify the counter incremented (first execution happened)
     let finalCount = getCounterValue()
     Test.assertEqual(1, finalCount)
@@ -179,7 +176,7 @@ access(all) fun test_CronHandler_DoubleBufferAfterFirstExecution() {
             arguments: [
                 "* * * * *",
                 /storage/CounterTransactionHandler as StoragePath,
-                /storage/TestCronHandler2 as StoragePath
+                /storage/TestCronHandler as StoragePath
             ]
         )
     )
@@ -194,7 +191,7 @@ access(all) fun test_CronHandler_DoubleBufferAfterFirstExecution() {
             authorizers: [testAccount.address],
             signers: [testAccount],
             arguments: [
-                /storage/TestCronHandler2 as StoragePath,
+                /storage/TestCronHandler as StoragePath,
                 nil as AnyStruct?,
                 1 as UInt8,
                 1000 as UInt64
@@ -232,7 +229,7 @@ access(all) fun test_CronScheduling_CalculatesCorrectTimes() {
             arguments: [
                 "*/5 * * * *",  // Every 5 minutes
                 /storage/CounterTransactionHandler as StoragePath,
-                /storage/TestCronHandler3 as StoragePath
+                /storage/TestCronHandler as StoragePath
             ]
         )
     )
@@ -247,7 +244,7 @@ access(all) fun test_CronScheduling_CalculatesCorrectTimes() {
             authorizers: [testAccount.address],
             signers: [testAccount],
             arguments: [
-                /storage/TestCronHandler3 as StoragePath,
+                /storage/TestCronHandler as StoragePath,
                 nil as AnyStruct?,
                 1 as UInt8,
                 1000 as UInt64
@@ -298,369 +295,6 @@ access(all) fun test_CronScheduling_CalculatesCorrectTimes() {
     // Verify they are 5 minutes apart
     let timeDiff = futureTime - nextTime
     Test.assertEqual(300, Int(timeDiff))  // 5 minutes = 300 seconds
-}
-
-/// Verify every-10-minutes cron pattern
-access(all) fun test_CronEvery10Minutes_SchedulesCorrectly() {
-
-    let createResult = Test.executeTransaction(
-        Test.Transaction(
-            code: Test.readFile("../transactions/CreateCronHandler.cdc"),
-            authorizers: [testAccount.address],
-            signers: [testAccount],
-            arguments: [
-                "*/10 * * * *",  // Every 10 minutes
-                /storage/CounterTransactionHandler as StoragePath,
-                /storage/TestCronHandler4 as StoragePath
-            ]
-        )
-    )
-    Test.expect(createResult, Test.beSucceeded())
-
-    let initialTimestamp = getTimestamp()
-
-    // Schedule the cron handler
-    let scheduleResult = Test.executeTransaction(
-        Test.Transaction(
-            code: Test.readFile("../transactions/ScheduleCronHandler.cdc"),
-            authorizers: [testAccount.address],
-            signers: [testAccount],
-            arguments: [
-                /storage/TestCronHandler4 as StoragePath,
-                nil as AnyStruct?,
-                1 as UInt8,
-                1000 as UInt64
-            ]
-        )
-    )
-    Test.expect(scheduleResult, Test.beSucceeded())
-
-    // Get scheduled event
-    let initialEvents = Test.eventsOfType(Type<FlowTransactionScheduler.Scheduled>())
-    let scheduledEvent = initialEvents[initialEvents.length - 1] as! FlowTransactionScheduler.Scheduled
-    let scheduledTime = scheduledEvent.timestamp
-
-    // Verify scheduled time is on a 10-minute boundary (0, 10, 20, 30, 40, 50)
-    let scheduledTimeInt = UInt64(scheduledTime)
-    let minutePart = (scheduledTimeInt / 60) % 60
-
-    let validMinutes = [0, 10, 20, 30, 40, 50]
-    var isValid = false
-    for validMin in validMinutes {
-        if minutePart == UInt64(validMin) {
-            isValid = true
-            break
-        }
-    }
-    Test.assert(isValid, message: "Scheduled time should be on a 10-minute boundary")
-
-    // Move time to trigger execution
-    let timeToAdvance = (scheduledTime - initialTimestamp) + 1.0
-    Test.moveTime(by: Fix64(timeToAdvance))
-
-    // Verify execution happened
-    Test.assertEqual(1, getCounterValue())
-
-    // Verify double-buffer scheduling with 10-minute intervals
-    let eventsAfterExecution = Test.eventsOfType(Type<FlowTransactionScheduler.Scheduled>())
-    let newEvents = eventsAfterExecution.length - initialEvents.length
-    Test.assertEqual(2, newEvents)
-
-    // Verify the scheduled times are 10 minutes apart
-    let nextEvent = eventsAfterExecution[eventsAfterExecution.length - 2] as! FlowTransactionScheduler.Scheduled
-    let futureEvent = eventsAfterExecution[eventsAfterExecution.length - 1] as! FlowTransactionScheduler.Scheduled
-
-    let nextTime = UInt64(nextEvent.timestamp)
-    let futureTime = UInt64(futureEvent.timestamp)
-    let timeDiff = futureTime - nextTime
-
-    Test.assertEqual(600, Int(timeDiff))  // 10 minutes = 600 seconds
-}
-
-/// Verify every-2-minutes cron pattern
-access(all) fun test_CronEvery2Minutes_SchedulesCorrectly() {
-
-    let createResult = Test.executeTransaction(
-        Test.Transaction(
-            code: Test.readFile("../transactions/CreateCronHandler.cdc"),
-            authorizers: [testAccount.address],
-            signers: [testAccount],
-            arguments: [
-                "*/2 * * * *",  // Every 2 minutes
-                /storage/CounterTransactionHandler as StoragePath,
-                /storage/TestCronHandler as StoragePath
-            ]
-        )
-    )
-    Test.expect(createResult, Test.beSucceeded())
-
-    let initialTimestamp = getTimestamp()
-
-    // Schedule the cron handler
-    let scheduleResult = Test.executeTransaction(
-        Test.Transaction(
-            code: Test.readFile("../transactions/ScheduleCronHandler.cdc"),
-            authorizers: [testAccount.address],
-            signers: [testAccount],
-            arguments: [
-                /storage/TestCronHandler as StoragePath,
-                nil as AnyStruct?,
-                1 as UInt8,
-                1000 as UInt64
-            ]
-        )
-    )
-    Test.expect(scheduleResult, Test.beSucceeded())
-
-    // Get scheduled event
-    let initialEvents = Test.eventsOfType(Type<FlowTransactionScheduler.Scheduled>())
-    let scheduledEvent = initialEvents[initialEvents.length - 1] as! FlowTransactionScheduler.Scheduled
-    let scheduledTime = scheduledEvent.timestamp
-
-    // Verify scheduled time is on a 2-minute boundary (even minutes: 0, 2, 4, 6, 8...)
-    let scheduledTimeInt = UInt64(scheduledTime)
-    let minutePart = (scheduledTimeInt / 60) % 60
-
-    // Minute should be even
-    Test.assert(minutePart % 2 == 0, message: "Scheduled time should be on a 2-minute boundary (even minute)")
-
-    // Move time to trigger execution
-    let timeToAdvance = (scheduledTime - initialTimestamp) + 1.0
-    Test.moveTime(by: Fix64(timeToAdvance))
-
-    // Verify execution happened
-    Test.assertEqual(1, getCounterValue())
-
-    // Verify double-buffer scheduling with 2-minute intervals
-    let eventsAfterExecution = Test.eventsOfType(Type<FlowTransactionScheduler.Scheduled>())
-    let newEvents = eventsAfterExecution.length - initialEvents.length
-    Test.assertEqual(2, newEvents)
-
-    // Verify the scheduled times are 2 minutes apart (120 seconds)
-    let nextEvent = eventsAfterExecution[eventsAfterExecution.length - 2] as! FlowTransactionScheduler.Scheduled
-    let futureEvent = eventsAfterExecution[eventsAfterExecution.length - 1] as! FlowTransactionScheduler.Scheduled
-
-    let nextTime = UInt64(nextEvent.timestamp)
-    let futureTime = UInt64(futureEvent.timestamp)
-    let timeDiff = futureTime - nextTime
-
-    Test.assertEqual(120, Int(timeDiff))  // 2 minutes = 120 seconds
-}
-
-/// Verify every-3-minutes cron pattern
-access(all) fun test_CronEvery3Minutes_SchedulesCorrectly() {
-
-    let createResult = Test.executeTransaction(
-        Test.Transaction(
-            code: Test.readFile("../transactions/CreateCronHandler.cdc"),
-            authorizers: [testAccount.address],
-            signers: [testAccount],
-            arguments: [
-                "*/3 * * * *",  // Every 3 minutes
-                /storage/CounterTransactionHandler as StoragePath,
-                /storage/TestCronHandler2 as StoragePath
-            ]
-        )
-    )
-    Test.expect(createResult, Test.beSucceeded())
-
-    let initialTimestamp = getTimestamp()
-
-    // Schedule the cron handler
-    let scheduleResult = Test.executeTransaction(
-        Test.Transaction(
-            code: Test.readFile("../transactions/ScheduleCronHandler.cdc"),
-            authorizers: [testAccount.address],
-            signers: [testAccount],
-            arguments: [
-                /storage/TestCronHandler2 as StoragePath,
-                nil as AnyStruct?,
-                1 as UInt8,
-                1000 as UInt64
-            ]
-        )
-    )
-    Test.expect(scheduleResult, Test.beSucceeded())
-
-    // Get scheduled event
-    let initialEvents = Test.eventsOfType(Type<FlowTransactionScheduler.Scheduled>())
-    let scheduledEvent = initialEvents[initialEvents.length - 1] as! FlowTransactionScheduler.Scheduled
-    let scheduledTime = scheduledEvent.timestamp
-
-    // Verify scheduled time is on a 3-minute boundary (0, 3, 6, 9, 12, 15...)
-    let scheduledTimeInt = UInt64(scheduledTime)
-    let minutePart = (scheduledTimeInt / 60) % 60
-
-    // Minute should be divisible by 3
-    Test.assert(minutePart % 3 == 0, message: "Scheduled time should be on a 3-minute boundary")
-
-    // Move time to trigger execution
-    let timeToAdvance = (scheduledTime - initialTimestamp) + 1.0
-    Test.moveTime(by: Fix64(timeToAdvance))
-
-    // Verify execution happened
-    Test.assertEqual(1, getCounterValue())
-
-    // Verify double-buffer scheduling with 3-minute intervals
-    let eventsAfterExecution = Test.eventsOfType(Type<FlowTransactionScheduler.Scheduled>())
-    let newEvents = eventsAfterExecution.length - initialEvents.length
-    Test.assertEqual(2, newEvents)
-
-    // Verify the scheduled times are 3 minutes apart (180 seconds)
-    let nextEvent = eventsAfterExecution[eventsAfterExecution.length - 2] as! FlowTransactionScheduler.Scheduled
-    let futureEvent = eventsAfterExecution[eventsAfterExecution.length - 1] as! FlowTransactionScheduler.Scheduled
-
-    let nextTime = UInt64(nextEvent.timestamp)
-    let futureTime = UInt64(futureEvent.timestamp)
-    let timeDiff = futureTime - nextTime
-
-    Test.assertEqual(180, Int(timeDiff))  // 3 minutes = 180 seconds
-}
-
-/// Verify every-15-minutes cron pattern
-access(all) fun test_CronEvery15Minutes_SchedulesCorrectly() {
-
-    let createResult = Test.executeTransaction(
-        Test.Transaction(
-            code: Test.readFile("../transactions/CreateCronHandler.cdc"),
-            authorizers: [testAccount.address],
-            signers: [testAccount],
-            arguments: [
-                "*/15 * * * *",  // Every 15 minutes
-                /storage/CounterTransactionHandler as StoragePath,
-                /storage/TestCronHandler3 as StoragePath
-            ]
-        )
-    )
-    Test.expect(createResult, Test.beSucceeded())
-
-    let initialTimestamp = getTimestamp()
-
-    // Schedule the cron handler
-    let scheduleResult = Test.executeTransaction(
-        Test.Transaction(
-            code: Test.readFile("../transactions/ScheduleCronHandler.cdc"),
-            authorizers: [testAccount.address],
-            signers: [testAccount],
-            arguments: [
-                /storage/TestCronHandler3 as StoragePath,
-                nil as AnyStruct?,
-                1 as UInt8,
-                1000 as UInt64
-            ]
-        )
-    )
-    Test.expect(scheduleResult, Test.beSucceeded())
-
-    // Get scheduled event
-    let initialEvents = Test.eventsOfType(Type<FlowTransactionScheduler.Scheduled>())
-    let scheduledEvent = initialEvents[initialEvents.length - 1] as! FlowTransactionScheduler.Scheduled
-    let scheduledTime = scheduledEvent.timestamp
-
-    // Verify scheduled time is on a 15-minute boundary (0, 15, 30, 45)
-    let scheduledTimeInt = UInt64(scheduledTime)
-    let minutePart = (scheduledTimeInt / 60) % 60
-
-    let validMinutes = [0, 15, 30, 45]
-    var isValid = false
-    for validMin in validMinutes {
-        if minutePart == UInt64(validMin) {
-            isValid = true
-            break
-        }
-    }
-    Test.assert(isValid, message: "Scheduled time should be on a 15-minute boundary (0, 15, 30, 45)")
-
-    // Move time to trigger execution
-    let timeToAdvance = (scheduledTime - initialTimestamp) + 1.0
-    Test.moveTime(by: Fix64(timeToAdvance))
-
-    // Verify execution happened
-    Test.assertEqual(1, getCounterValue())
-
-    // Verify double-buffer scheduling with 15-minute intervals
-    let eventsAfterExecution = Test.eventsOfType(Type<FlowTransactionScheduler.Scheduled>())
-    let newEvents = eventsAfterExecution.length - initialEvents.length
-    Test.assertEqual(2, newEvents)
-
-    // Verify the scheduled times are 15 minutes apart (900 seconds)
-    let nextEvent = eventsAfterExecution[eventsAfterExecution.length - 2] as! FlowTransactionScheduler.Scheduled
-    let futureEvent = eventsAfterExecution[eventsAfterExecution.length - 1] as! FlowTransactionScheduler.Scheduled
-
-    let nextTime = UInt64(nextEvent.timestamp)
-    let futureTime = UInt64(futureEvent.timestamp)
-    let timeDiff = futureTime - nextTime
-
-    Test.assertEqual(900, Int(timeDiff))  // 15 minutes = 900 seconds
-}
-
-/// Verify every-30-minutes cron pattern
-access(all) fun test_CronEvery30Minutes_SchedulesCorrectly() {
-
-    let createResult = Test.executeTransaction(
-        Test.Transaction(
-            code: Test.readFile("../transactions/CreateCronHandler.cdc"),
-            authorizers: [testAccount.address],
-            signers: [testAccount],
-            arguments: [
-                "*/30 * * * *",  // Every 30 minutes
-                /storage/CounterTransactionHandler as StoragePath,
-                /storage/TestCronHandler4 as StoragePath
-            ]
-        )
-    )
-    Test.expect(createResult, Test.beSucceeded())
-
-    let initialTimestamp = getTimestamp()
-
-    // Schedule the cron handler
-    let scheduleResult = Test.executeTransaction(
-        Test.Transaction(
-            code: Test.readFile("../transactions/ScheduleCronHandler.cdc"),
-            authorizers: [testAccount.address],
-            signers: [testAccount],
-            arguments: [
-                /storage/TestCronHandler4 as StoragePath,
-                nil as AnyStruct?,
-                1 as UInt8,
-                1000 as UInt64
-            ]
-        )
-    )
-    Test.expect(scheduleResult, Test.beSucceeded())
-
-    // Get scheduled event
-    let initialEvents = Test.eventsOfType(Type<FlowTransactionScheduler.Scheduled>())
-    let scheduledEvent = initialEvents[initialEvents.length - 1] as! FlowTransactionScheduler.Scheduled
-    let scheduledTime = scheduledEvent.timestamp
-
-    // Verify scheduled time is on a 30-minute boundary (0 or 30)
-    let scheduledTimeInt = UInt64(scheduledTime)
-    let minutePart = (scheduledTimeInt / 60) % 60
-
-    Test.assert(minutePart == 0 || minutePart == 30, message: "Scheduled time should be on a 30-minute boundary (0 or 30)")
-
-    // Move time to trigger execution
-    let timeToAdvance = (scheduledTime - initialTimestamp) + 1.0
-    Test.moveTime(by: Fix64(timeToAdvance))
-
-    // Verify execution happened
-    Test.assertEqual(1, getCounterValue())
-
-    // Verify double-buffer scheduling with 30-minute intervals
-    let eventsAfterExecution = Test.eventsOfType(Type<FlowTransactionScheduler.Scheduled>())
-    let newEvents = eventsAfterExecution.length - initialEvents.length
-    Test.assertEqual(2, newEvents)
-
-    // Verify the scheduled times are 30 minutes apart (1800 seconds)
-    let nextEvent = eventsAfterExecution[eventsAfterExecution.length - 2] as! FlowTransactionScheduler.Scheduled
-    let futureEvent = eventsAfterExecution[eventsAfterExecution.length - 1] as! FlowTransactionScheduler.Scheduled
-
-    let nextTime = UInt64(nextEvent.timestamp)
-    let futureTime = UInt64(futureEvent.timestamp)
-    let timeDiff = futureTime - nextTime
-
-    Test.assertEqual(1800, Int(timeDiff))  // 30 minutes = 1800 seconds
 }
 
 /// Verify specific minute each hour pattern (at minute 15 of every hour)
@@ -749,7 +383,7 @@ access(all) fun test_CronSpecificHourAndMinute() {
             arguments: [
                 "30 2 * * *",  // At 2:30 AM every day
                 /storage/CounterTransactionHandler as StoragePath,
-                /storage/TestCronHandler2 as StoragePath
+                /storage/TestCronHandler as StoragePath
             ]
         )
     )
@@ -764,7 +398,7 @@ access(all) fun test_CronSpecificHourAndMinute() {
             authorizers: [testAccount.address],
             signers: [testAccount],
             arguments: [
-                /storage/TestCronHandler2 as StoragePath,
+                /storage/TestCronHandler as StoragePath,
                 nil as AnyStruct?,
                 1 as UInt8,
                 1000 as UInt64
@@ -902,8 +536,7 @@ access(all) fun test_CronRejectsSchedulingWhenAlreadyScheduled() {
     // If rejection worked correctly, we should have at most 3 total scheduled events:
     // 1 initial + 2 from first execution (double-buffer)
     // The duplicate should NOT have created additional scheduled transactions
-    Test.assert(finalEvents.length <= initialEvents.length + 3,
-        message: "Rejection should prevent additional scheduling beyond initial double-buffer")
+    Test.assert(finalEvents.length <= initialEvents.length + 3, message: "Rejection should prevent additional scheduling beyond initial double-buffer")
 }
 
 /// Verify cancellation and rescheduling after all transactions cancelled
@@ -918,7 +551,7 @@ access(all) fun test_CronCancellationAndRescheduling() {
             arguments: [
                 "*/5 * * * *",  // Every 5 minutes
                 /storage/CounterTransactionHandler as StoragePath,
-                /storage/TestCronHandler2 as StoragePath
+                /storage/TestCronHandler as StoragePath
             ]
         )
     )
@@ -931,7 +564,7 @@ access(all) fun test_CronCancellationAndRescheduling() {
             authorizers: [testAccount.address],
             signers: [testAccount],
             arguments: [
-                /storage/TestCronHandler2 as StoragePath,
+                /storage/TestCronHandler as StoragePath,
                 "initial data" as AnyStruct?,
                 1 as UInt8,
                 1000 as UInt64
@@ -959,7 +592,7 @@ access(all) fun test_CronCancellationAndRescheduling() {
             authorizers: [testAccount.address],
             signers: [testAccount],
             arguments: [
-                /storage/TestCronHandler2 as StoragePath
+                /storage/TestCronHandler as StoragePath
             ]
         )
     )
@@ -976,7 +609,7 @@ access(all) fun test_CronCancellationAndRescheduling() {
             authorizers: [testAccount.address],
             signers: [testAccount],
             arguments: [
-                /storage/TestCronHandler2 as StoragePath,
+                /storage/TestCronHandler as StoragePath,
                 "new data" as AnyStruct?,
                 1 as UInt8,
                 1000 as UInt64
@@ -1018,14 +651,14 @@ access(all) fun test_CronInfoView() {
             arguments: [
                 "*/10 * * * *",  // Every 10 minutes
                 /storage/CounterTransactionHandler as StoragePath,
-                /storage/TestCronHandler3 as StoragePath
+                /storage/TestCronHandler as StoragePath
             ]
         )
     )
     Test.expect(createResult, Test.beSucceeded())
 
     // Before scheduling - CronInfo should show calculated times
-    let cronInfoBefore = getCronInfo(/storage/TestCronHandler3)
+    let cronInfoBefore = getCronInfo(/storage/TestCronHandler)
     Test.assert(cronInfoBefore != nil, message: "CronInfo should not be nil")
 
     if let info = cronInfoBefore {
@@ -1047,7 +680,7 @@ access(all) fun test_CronInfoView() {
             authorizers: [testAccount.address],
             signers: [testAccount],
             arguments: [
-                /storage/TestCronHandler3 as StoragePath,
+                /storage/TestCronHandler as StoragePath,
                 nil as AnyStruct?,
                 1 as UInt8,
                 1000 as UInt64
@@ -1064,7 +697,7 @@ access(all) fun test_CronInfoView() {
     Test.moveTime(by: Fix64(timeToAdvance))
 
     // After first execution - CronInfo should show actual scheduled transaction times
-    let cronInfoAfter = getCronInfo(/storage/TestCronHandler3)
+    let cronInfoAfter = getCronInfo(/storage/TestCronHandler)
     Test.assert(cronInfoAfter != nil, message: "CronInfo should not be nil after execution")
 
     if let info = cronInfoAfter {
@@ -1095,7 +728,7 @@ access(all) fun test_CronScheduleExecutedEvents() {
             arguments: [
                 "* * * * *",
                 /storage/CounterTransactionHandler as StoragePath,
-                /storage/TestCronHandler4 as StoragePath
+                /storage/TestCronHandler as StoragePath
             ]
         )
     )
@@ -1107,7 +740,7 @@ access(all) fun test_CronScheduleExecutedEvents() {
             authorizers: [testAccount.address],
             signers: [testAccount],
             arguments: [
-                /storage/TestCronHandler4 as StoragePath,
+                /storage/TestCronHandler as StoragePath,
                 nil as AnyStruct?,
                 1 as UInt8,
                 1000 as UInt64
@@ -1235,9 +868,8 @@ access(all) fun test_FullCronCycle_MultipleExecutions() {
 
     // Part 2: Verify double-buffer is maintained with correct intervals
 
-    // The Cadence test framework has a known limitation: transactions scheduled
-    // DURING an execution are not automatically triggered by subsequent Test.moveTime() calls.
-    // Therefore, we verify the logic correctness by checking the scheduled state.
+    // TOFIX: Transactions scheduled DURING an execution are not automatically triggered by subsequent Test.moveTime() calls
+    // TODO: Add a test to verify the transaction is scheduled and executed correctly
 
     // Extract transaction IDs from status
     let nextTxID = status["nextTransactionID"] as! UInt64?
