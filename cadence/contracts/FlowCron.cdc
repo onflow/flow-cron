@@ -188,6 +188,11 @@ access(all) contract FlowCron {
         
         /// Checks if the given transaction ID is one we're expecting to execute
         access(self) view fun isExpectedTransaction(id: UInt64): Bool {
+            /// This method returns true for BOTH nextScheduledTransactionID and futureScheduledTransactionID.
+            /// This is intentional as part of the double-buffer pattern:
+            /// - Normal case: Only the next transaction executes, future remains queued
+            /// - Failure recovery: If next fails to execute, future can execute instead
+            /// - Both are valid execution paths that should trigger rescheduling
             return id == self.nextScheduledTransactionID || id == self.futureScheduledTransactionID
         }
         
