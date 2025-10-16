@@ -28,10 +28,48 @@ import "MetadataViews"
 access(all) contract FlowCron {
     
     /// Events
-    access(all) event CronScheduleExecuted(handlerUUID: UInt64, txID: UInt64)
-    access(all) event CronScheduleRejected(handlerUUID: UInt64, txID: UInt64)
-    access(all) event CronScheduleFailed(handlerUUID: UInt64, requiredAmount: UFix64, availableAmount: UFix64)
-    access(all) event CronEstimationFailed(handlerUUID: UInt64)
+    access(all) event CronScheduleExecuted(
+        txID: UInt64,
+        nextTxID: UInt64?,
+        futureTxID: UInt64?,
+        cronExpression: String,
+        handlerUUID: UInt64,
+        handlerOwner: Address,
+        wrappedHandlerType: String?,
+        wrappedHandlerUUID: UInt64?,
+        wrappedHandlerOwner: Address?
+    )
+    access(all) event CronScheduleRejected(
+        txID: UInt64,
+        cronExpression: String,
+        handlerUUID: UInt64,
+        handlerOwner: Address,
+        wrappedHandlerType: String?,
+        wrappedHandlerUUID: UInt64?,
+        wrappedHandlerOwner: Address?
+    )
+    access(all) event CronScheduleFailed(
+        txID: UInt64,
+        requiredAmount: UFix64,
+        availableAmount: UFix64,
+        scheduleType: String,
+        cronExpression: String,
+        handlerUUID: UInt64,
+        handlerOwner: Address,
+        wrappedHandlerType: String?,
+        wrappedHandlerUUID: UInt64?,
+        wrappedHandlerOwner: Address?
+    )
+    access(all) event CronEstimationFailed(
+        txID: UInt64,
+        scheduleType: String,
+        cronExpression: String,
+        handlerUUID: UInt64,
+        handlerOwner: Address,
+        wrappedHandlerType: String?,
+        wrappedHandlerUUID: UInt64?,
+        wrappedHandlerOwner: Address?
+    )
     
     /// CronHandler resource wraps any TransactionHandler with cron scheduling functionality
     access(all) resource CronHandler: FlowTransactionScheduler.TransactionHandler, ViewResolver.Resolver {
@@ -76,25 +114,38 @@ access(all) contract FlowCron {
             if self.isExpectedTransaction(id: id) {
                 self.updateSchedule(executedID: id)
             } else {
-                // Reject subsequent scheduling once handler is scheduled
-                // This ensures that the handler is not scheduled multiple times with different data
                 if self.isScheduled {
-                    emit CronScheduleRejected(handlerUUID: self.uuid, txID: id)
+                    let wrappedHandler = self.wrappedHandlerCap.borrow()
+                    emit CronScheduleRejected(
+                        txID: id,
+                        cronExpression: self.cronExpression,
+                        handlerUUID: self.uuid,
+                        handlerOwner: self.wrappedHandlerCap.address,
+                        wrappedHandlerType: wrappedHandler?.getType()?.identifier,
+                        wrappedHandlerUUID: wrappedHandler?.uuid,
+                        wrappedHandlerOwner: self.wrappedHandlerCap.address
+                    )
                     return
                 }
             }
 
-            // Extract execution context
-            let context = data as? CronContext ?? panic("Invalid execution data: expected CronContext")        
-            // Ensure double scheduling filling the schedule with the next and future transactions if needed
+            let context = data as? CronContext ?? panic("Invalid execution data: expected CronContext")
             self.fillSchedule(context: context)
-            
-            // Execute wrapped handler last to ensure cron scheduling completes first
+
             let wrappedHandler = self.wrappedHandlerCap.borrow() ?? panic("Cannot borrow wrapped handler capability")
             wrappedHandler.executeTransaction(id: id, data: context.wrappedData)
-            
-            // Emit event only after successful execution
-            emit CronScheduleExecuted(handlerUUID: self.uuid, txID: id)
+
+            emit CronScheduleExecuted(
+                txID: id,
+                nextTxID: self.nextScheduledTransactionID,
+                futureTxID: self.futureScheduledTransactionID,
+                cronExpression: self.cronExpression,
+                handlerUUID: self.uuid,
+                handlerOwner: self.wrappedHandlerCap.address,
+                wrappedHandlerType: wrappedHandler.getType().identifier,
+                wrappedHandlerUUID: wrappedHandler.uuid,
+                wrappedHandlerOwner: self.wrappedHandlerCap.address
+            )
         }
 
         /// Syncs internal schedule state with external transaction scheduler
@@ -196,20 +247,35 @@ access(all) contract FlowCron {
                         )
                         self.nextScheduledTransactionID = transactionId
                     } else {
-                        // Not enough funds
+                        let wrappedHandler = self.wrappedHandlerCap.borrow()
                         emit CronScheduleFailed(
-                            handlerUUID: self.uuid,
+                            txID: 0,
                             requiredAmount: requiredFee,
-                            availableAmount: feeVault.balance
+                            availableAmount: feeVault.balance,
+                            scheduleType: "next",
+                            cronExpression: self.cronExpression,
+                            handlerUUID: self.uuid,
+                            handlerOwner: self.wrappedHandlerCap.address,
+                            wrappedHandlerType: wrappedHandler?.getType()?.identifier,
+                            wrappedHandlerUUID: wrappedHandler?.uuid,
+                            wrappedHandlerOwner: self.wrappedHandlerCap.address
                         )
                     }
                 } else {
-                    // Fee estimation failed
-                    emit CronEstimationFailed(handlerUUID: self.uuid)
+                    let wrappedHandler = self.wrappedHandlerCap.borrow()
+                    emit CronEstimationFailed(
+                        txID: 0,
+                        scheduleType: "next",
+                        cronExpression: self.cronExpression,
+                        handlerUUID: self.uuid,
+                        handlerOwner: self.wrappedHandlerCap.address,
+                        wrappedHandlerType: wrappedHandler?.getType()?.identifier,
+                        wrappedHandlerUUID: wrappedHandler?.uuid,
+                        wrappedHandlerOwner: self.wrappedHandlerCap.address
+                    )
                 }
             }
-            
-            // Schedule future transaction if needed
+
             if needsFuture {
                 // Estimate fees for future transaction
                 let estimateFuture = FlowTransactionScheduler.estimate(
@@ -236,16 +302,32 @@ access(all) contract FlowCron {
                         )
                         self.futureScheduledTransactionID = transactionId
                     } else {
-                        // Not enough funds
+                        let wrappedHandler = self.wrappedHandlerCap.borrow()
                         emit CronScheduleFailed(
-                            handlerUUID: self.uuid,
+                            txID: 0,
                             requiredAmount: requiredFee,
-                            availableAmount: feeVault.balance
+                            availableAmount: feeVault.balance,
+                            scheduleType: "future",
+                            cronExpression: self.cronExpression,
+                            handlerUUID: self.uuid,
+                            handlerOwner: self.wrappedHandlerCap.address,
+                            wrappedHandlerType: wrappedHandler?.getType()?.identifier,
+                            wrappedHandlerUUID: wrappedHandler?.uuid,
+                            wrappedHandlerOwner: self.wrappedHandlerCap.address
                         )
                     }
                 } else {
-                    // Fee estimation failed
-                    emit CronEstimationFailed(handlerUUID: self.uuid)
+                    let wrappedHandler = self.wrappedHandlerCap.borrow()
+                    emit CronEstimationFailed(
+                        txID: 0,
+                        scheduleType: "future",
+                        cronExpression: self.cronExpression,
+                        handlerUUID: self.uuid,
+                        handlerOwner: self.wrappedHandlerCap.address,
+                        wrappedHandlerType: wrappedHandler?.getType()?.identifier,
+                        wrappedHandlerUUID: wrappedHandler?.uuid,
+                        wrappedHandlerOwner: self.wrappedHandlerCap.address
+                    )
                 }
             }
         }
