@@ -150,6 +150,16 @@ access(all) contract FlowCron {
 
         /// Syncs internal schedule state with external transaction scheduler
         access(self) fun syncSchedule() {
+            /// Ensures consistency between our internal state and the actual scheduler:
+            /// - Validates that stored transaction IDs still exist and are in Scheduled status
+            /// - Clears stale IDs (executed, cancelled, or missing transactions)
+            /// - Updates hasActiveSchedule flag to control whether new scheduling is allowed
+            ///
+            /// Why this matters:
+            /// - Transactions can be cancelled externally via FlowTransactionScheduler
+            /// - Transactions execute and change status from Scheduled to other states
+            /// - We need accurate state to decide: accept new scheduling vs. reject with different context
+            /// - When both IDs are cleared, hasActiveSchedule becomes false, allowing fresh scheduling
             var hasValidNext = false
             var hasValidFuture = false
             
@@ -188,7 +198,7 @@ access(all) contract FlowCron {
         
         /// Checks if the given transaction ID is one we're expecting to execute
         access(self) view fun isExpectedTransaction(id: UInt64): Bool {
-            /// This method returns true for BOTH nextScheduledTransactionID and futureScheduledTransactionID.
+            /// Returns true for BOTH nextScheduledTransactionID and futureScheduledTransactionID.
             /// This is intentional as part of the double-buffer pattern:
             /// - Normal case: Only the next transaction executes, future remains queued
             /// - Failure recovery: If next fails to execute, future can execute instead
