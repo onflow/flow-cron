@@ -85,9 +85,9 @@ access(all) contract FlowCron {
         /// Internal state to track our scheduled transactions
         access(self) var nextScheduledTransactionID: UInt64?
         access(self) var futureScheduledTransactionID: UInt64?
-        
-        /// Track if this handler is scheduled to reject subsequent scheduling attempts
-        access(self) var isScheduled: Bool
+
+        /// Indicates whether this handler has an active schedule, preventing new scheduling with different contexts
+        access(self) var hasActiveSchedule: Bool
         
         init(
             cronExpression: String,
@@ -103,7 +103,7 @@ access(all) contract FlowCron {
             self.wrappedHandlerCap = wrappedHandlerCap
             self.nextScheduledTransactionID = nil
             self.futureScheduledTransactionID = nil
-            self.isScheduled = false
+            self.hasActiveSchedule = false
         }
         
         access(FlowTransactionScheduler.Execute) fun executeTransaction(id: UInt64, data: AnyStruct?) {
@@ -114,7 +114,7 @@ access(all) contract FlowCron {
             if self.isExpectedTransaction(id: id) {
                 self.updateSchedule(executedID: id)
             } else {
-                if self.isScheduled {
+                if self.hasActiveSchedule {
                     let wrappedHandler = self.wrappedHandlerCap.borrow()
                     emit CronScheduleRejected(
                         txID: id,
@@ -179,10 +179,10 @@ access(all) contract FlowCron {
             // Update scheduled status based on transaction state
             if !hasValidNext && !hasValidFuture {
                 // Reset if no valid transactions remain (allows rescheduling)
-                self.isScheduled = false
-            } else if !self.isScheduled {
+                self.hasActiveSchedule = false
+            } else if !self.hasActiveSchedule {
                 // Mark as scheduled if we have valid transactions but flag isn't set yet
-                self.isScheduled = true
+                self.hasActiveSchedule = true
             }
         }
         

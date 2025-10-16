@@ -109,7 +109,7 @@ access(all) resource CronHandler: FlowTransactionScheduler.TransactionHandler, V
     // Scheduling state (internal)
     access(self) var nextScheduledTransactionID: UInt64?
     access(self) var futureScheduledTransactionID: UInt64?
-    access(self) var isScheduled: Bool
+    access(self) var hasActiveSchedule: Bool
 
     // TransactionHandler interface
     access(FlowTransactionScheduler.Execute) fun executeTransaction(id: UInt64, data: AnyStruct?)
@@ -203,7 +203,7 @@ Time ─────────────────────────
 The `syncSchedule()` function maintains consistency:
 
 - Clears stale transaction IDs (executed/cancelled/missing)
-- Updates `isScheduled` flag to control external scheduling
+- Updates `hasActiveSchedule` flag to control external scheduling
 - Ensures internal state matches scheduler reality
 
 #### 4. Distributed Ownership
