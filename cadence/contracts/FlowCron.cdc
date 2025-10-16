@@ -51,6 +51,7 @@ access(all) contract FlowCron {
         wrappedHandlerOwner: Address?
     )
     access(all) event CronScheduleFailed(
+        txID: UInt64,
         scheduleType: UInt8,
         requiredAmount: UFix64,
         availableAmount: UFix64,
@@ -62,6 +63,7 @@ access(all) contract FlowCron {
         wrappedHandlerOwner: Address?
     )
     access(all) event CronEstimationFailed(
+        txID: UInt64,
         scheduleType: UInt8,
         cronExpression: String,
         handlerUUID: UInt64,
@@ -89,6 +91,7 @@ access(all) contract FlowCron {
         access(self) let wrappedHandlerCap: Capability<auth(FlowTransactionScheduler.Execute) &{FlowTransactionScheduler.TransactionHandler}>
         
         /// Internal state to track our scheduled transactions
+        access(self) var currentScheduledTransactionID: UInt64?
         access(self) var nextScheduledTransactionID: UInt64?
         access(self) var futureScheduledTransactionID: UInt64?
 
@@ -107,12 +110,16 @@ access(all) contract FlowCron {
             self.cronExpression = cronExpression
             self.cronSpec = FlowCronUtils.parse(expression: cronExpression) ?? panic("Invalid cron expression: ".concat(cronExpression))
             self.wrappedHandlerCap = wrappedHandlerCap
+            self.currentScheduledTransactionID = nil
             self.nextScheduledTransactionID = nil
             self.futureScheduledTransactionID = nil
             self.hasActiveSchedule = false
         }
         
         access(FlowTransactionScheduler.Execute) fun executeTransaction(id: UInt64, data: AnyStruct?) {
+            // Store the current transaction ID for event emissions
+            self.currentScheduledTransactionID = id
+
             // Sync schedule state and determine execution type
             self.syncSchedule()
 
@@ -266,6 +273,7 @@ access(all) contract FlowCron {
                     // Insufficient funds
                     let wrappedHandler = self.wrappedHandlerCap.borrow()
                     emit CronScheduleFailed(
+                        txID: self.currentScheduledTransactionID!,
                         scheduleType: scheduleType.rawValue,
                         requiredAmount: requiredFee,
                         availableAmount: feeVault.balance,
@@ -282,6 +290,7 @@ access(all) contract FlowCron {
                 // Fee estimation failed
                 let wrappedHandler = self.wrappedHandlerCap.borrow()
                 emit CronEstimationFailed(
+                    txID: self.currentScheduledTransactionID!,
                     scheduleType: scheduleType.rawValue,
                     cronExpression: self.cronExpression,
                     handlerUUID: self.uuid,
