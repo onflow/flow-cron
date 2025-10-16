@@ -41,6 +41,8 @@ access(all) contract FlowCron {
     )
     access(all) event CronScheduleRejected(
         txID: UInt64,
+        nextTxID: UInt64?,
+        futureTxID: UInt64?,
         cronExpression: String,
         handlerUUID: UInt64,
         handlerOwner: Address,
@@ -49,10 +51,9 @@ access(all) contract FlowCron {
         wrappedHandlerOwner: Address?
     )
     access(all) event CronScheduleFailed(
-        txID: UInt64,
+        scheduleType: UInt8,
         requiredAmount: UFix64,
         availableAmount: UFix64,
-        scheduleType: String,
         cronExpression: String,
         handlerUUID: UInt64,
         handlerOwner: Address,
@@ -61,8 +62,7 @@ access(all) contract FlowCron {
         wrappedHandlerOwner: Address?
     )
     access(all) event CronEstimationFailed(
-        txID: UInt64,
-        scheduleType: String,
+        scheduleType: UInt8,
         cronExpression: String,
         handlerUUID: UInt64,
         handlerOwner: Address,
@@ -70,7 +70,13 @@ access(all) contract FlowCron {
         wrappedHandlerUUID: UInt64?,
         wrappedHandlerOwner: Address?
     )
-    
+
+    /// Enum representing the type of cron schedule slot
+    access(all) enum CronScheduleType: UInt8 {
+        access(all) case Next
+        access(all) case Future
+    }
+
     /// CronHandler resource wraps any TransactionHandler with cron scheduling functionality
     access(all) resource CronHandler: FlowTransactionScheduler.TransactionHandler, ViewResolver.Resolver {
 
@@ -118,6 +124,8 @@ access(all) contract FlowCron {
                     let wrappedHandler = self.wrappedHandlerCap.borrow()
                     emit CronScheduleRejected(
                         txID: id,
+                        nextTxID: self.nextScheduledTransactionID,
+                        futureTxID: self.futureScheduledTransactionID,
                         cronExpression: self.cronExpression,
                         handlerUUID: self.uuid,
                         handlerOwner: self.wrappedHandlerCap.address,
@@ -149,17 +157,18 @@ access(all) contract FlowCron {
         }
 
         /// Syncs internal schedule state with external transaction scheduler
+        ///
+        /// Ensures consistency between our internal state and the actual scheduler.
+        /// - Validates that stored transaction IDs still exist and are in Scheduled status
+        /// - Clears stale IDs (executed, cancelled, or missing transactions)
+        /// - Updates hasActiveSchedule flag to control whether new scheduling is allowed
+        ///
+        /// Why this matters:
+        /// - Transactions can be cancelled externally via FlowTransactionScheduler
+        /// - Transactions execute and change status from Scheduled to other states
+        /// - We need accurate state to decide: accept new scheduling vs. reject with different context
+        /// - When both IDs are cleared, hasActiveSchedule becomes false, allowing fresh scheduling
         access(self) fun syncSchedule() {
-            /// Ensures consistency between our internal state and the actual scheduler:
-            /// - Validates that stored transaction IDs still exist and are in Scheduled status
-            /// - Clears stale IDs (executed, cancelled, or missing transactions)
-            /// - Updates hasActiveSchedule flag to control whether new scheduling is allowed
-            ///
-            /// Why this matters:
-            /// - Transactions can be cancelled externally via FlowTransactionScheduler
-            /// - Transactions execute and change status from Scheduled to other states
-            /// - We need accurate state to decide: accept new scheduling vs. reject with different context
-            /// - When both IDs are cleared, hasActiveSchedule becomes false, allowing fresh scheduling
             var hasValidNext = false
             var hasValidFuture = false
             
@@ -197,16 +206,17 @@ access(all) contract FlowCron {
         }
         
         /// Checks if the given transaction ID is one we're expecting to execute
+        ///
+        /// Returns true for BOTH nextScheduledTransactionID and futureScheduledTransactionID.
+        /// This is intentional as part of the double-buffer pattern:
+        /// - Normal case: Only the next transaction executes, future remains queued
+        /// - Failure recovery: If next fails to execute, future can execute instead
+        /// - Both are valid execution paths that should trigger rescheduling
         access(self) view fun isExpectedTransaction(id: UInt64): Bool {
-            /// Returns true for BOTH nextScheduledTransactionID and futureScheduledTransactionID.
-            /// This is intentional as part of the double-buffer pattern:
-            /// - Normal case: Only the next transaction executes, future remains queued
-            /// - Failure recovery: If next fails to execute, future can execute instead
-            /// - Both are valid execution paths that should trigger rescheduling
             return id == self.nextScheduledTransactionID || id == self.futureScheduledTransactionID
         }
         
-        /// Updates internal state after executing an expected transaction
+        /// Helper function to update internal state after executing an expected transaction
         access(self) fun updateSchedule(executedID: UInt64) {
             // Update state based on the executed transaction ID
             if executedID == self.nextScheduledTransactionID {
@@ -216,8 +226,87 @@ access(all) contract FlowCron {
                 self.futureScheduledTransactionID = nil
             }
         }
-        
+
+        /// Helper function to attempt scheduling a single transaction
+        /// Returns the transaction ID if successful, nil if failed (fee estimation or insufficient funds)
+        access(self) fun scheduleTransaction(
+            scheduleType: CronScheduleType,
+            timestamp: UInt64,
+            context: CronContext
+        ): UInt64? {
+            // Borrow capabilities we'll need
+            let schedulerManager = context.schedulerManagerCap.borrow() ?? panic("Cannot borrow scheduler manager capability")
+            let feeVault = context.feeProviderCap.borrow() ?? panic("Cannot borrow fee provider capability")
+
+            // Estimate fees
+            let estimate = FlowTransactionScheduler.estimate(
+                data: context,
+                timestamp: UFix64(timestamp),
+                priority: context.priority,
+                executionEffort: context.executionEffort
+            )
+
+            // Check if we got a fee estimate
+            if let requiredFee = estimate.flowFee {
+                // Check if we have enough funds
+                if feeVault.balance >= requiredFee {
+                    // Withdraw fees and schedule
+                    let fees <- feeVault.withdraw(amount: requiredFee)
+                    let transactionId = schedulerManager.scheduleByHandler(
+                        handlerTypeIdentifier: self.getType().identifier,
+                        handlerUUID: self.uuid,
+                        data: context,
+                        timestamp: UFix64(timestamp),
+                        priority: context.priority,
+                        executionEffort: context.executionEffort,
+                        fees: <-fees as! @FlowToken.Vault
+                    )
+                    return transactionId
+                } else {
+                    // Insufficient funds
+                    let wrappedHandler = self.wrappedHandlerCap.borrow()
+                    emit CronScheduleFailed(
+                        scheduleType: scheduleType.rawValue,
+                        requiredAmount: requiredFee,
+                        availableAmount: feeVault.balance,
+                        cronExpression: self.cronExpression,
+                        handlerUUID: self.uuid,
+                        handlerOwner: self.wrappedHandlerCap.address,
+                        wrappedHandlerType: wrappedHandler?.getType()?.identifier,
+                        wrappedHandlerUUID: wrappedHandler?.uuid,
+                        wrappedHandlerOwner: self.wrappedHandlerCap.address
+                    )
+                    return nil
+                }
+            } else {
+                // Fee estimation failed
+                let wrappedHandler = self.wrappedHandlerCap.borrow()
+                emit CronEstimationFailed(
+                    scheduleType: scheduleType.rawValue,
+                    cronExpression: self.cronExpression,
+                    handlerUUID: self.uuid,
+                    handlerOwner: self.wrappedHandlerCap.address,
+                    wrappedHandlerType: wrappedHandler?.getType()?.identifier,
+                    wrappedHandlerUUID: wrappedHandler?.uuid,
+                    wrappedHandlerOwner: self.wrappedHandlerCap.address
+                )
+                return nil
+            }
+        }
+
         /// Ensures double scheduling by filling gaps in next/future transactions
+        ///
+        /// Implements the double-buffer pattern for cron scheduling:
+        /// - Maintains two scheduled transactions at all times (next + future)
+        /// - Called BEFORE executing the wrapped handler to ensure continuity
+        /// - Automatically calculates execution times based on cron expression
+        /// - Handles fee estimation and vault balance checking
+        /// - Emits failure events if scheduling cannot be completed
+        ///
+        /// The double-buffer ensures:
+        /// - Continuous operation even if one transaction fails
+        /// - Automatic gap-filling when transactions are missed
+        /// - Reliability through redundancy
         access(self) fun fillSchedule(context: CronContext) {
             // Check what we need to schedule
             let needsNext = self.nextScheduledTransactionID == nil
@@ -232,117 +321,24 @@ access(all) contract FlowCron {
             let nextTime = FlowCronUtils.nextTick(spec: self.cronSpec, afterUnix: currentTime) ?? panic("Cannot find next execution time for cron expression")
             let futureTime = FlowCronUtils.nextTick(spec: self.cronSpec, afterUnix: nextTime) ?? panic("Cannot find future execution time for cron expression")
 
-            // Borrow capabilities we'll need
-            let schedulerManager = context.schedulerManagerCap.borrow() ?? panic("Cannot borrow scheduler manager capability")
-            let feeVault = context.feeProviderCap.borrow() ?? panic("Cannot borrow fee provider capability")
             // Schedule next transaction if needed
             if needsNext {
-                // Estimate fees for next transaction
-                let estimateNext = FlowTransactionScheduler.estimate(
-                    data: context,
-                    timestamp: UFix64(nextTime),
-                    priority: context.priority,
-                    executionEffort: context.executionEffort
-                )
-                
-                // Check if we got a fee estimate
-                if let requiredFee = estimateNext.flowFee {
-                    // Check if we have enough funds
-                    if feeVault.balance >= requiredFee {
-                        // Withdraw fees and schedule
-                        let fees <- feeVault.withdraw(amount: requiredFee)
-                        let transactionId = schedulerManager.scheduleByHandler(
-                            handlerTypeIdentifier: self.getType().identifier,
-                            handlerUUID: self.uuid,
-                            data: context,
-                            timestamp: UFix64(nextTime),
-                            priority: context.priority,
-                            executionEffort: context.executionEffort,
-                            fees: <-fees as! @FlowToken.Vault
-                        )
-                        self.nextScheduledTransactionID = transactionId
-                    } else {
-                        let wrappedHandler = self.wrappedHandlerCap.borrow()
-                        emit CronScheduleFailed(
-                            txID: 0,
-                            requiredAmount: requiredFee,
-                            availableAmount: feeVault.balance,
-                            scheduleType: "next",
-                            cronExpression: self.cronExpression,
-                            handlerUUID: self.uuid,
-                            handlerOwner: self.wrappedHandlerCap.address,
-                            wrappedHandlerType: wrappedHandler?.getType()?.identifier,
-                            wrappedHandlerUUID: wrappedHandler?.uuid,
-                            wrappedHandlerOwner: self.wrappedHandlerCap.address
-                        )
-                    }
-                } else {
-                    let wrappedHandler = self.wrappedHandlerCap.borrow()
-                    emit CronEstimationFailed(
-                        txID: 0,
-                        scheduleType: "next",
-                        cronExpression: self.cronExpression,
-                        handlerUUID: self.uuid,
-                        handlerOwner: self.wrappedHandlerCap.address,
-                        wrappedHandlerType: wrappedHandler?.getType()?.identifier,
-                        wrappedHandlerUUID: wrappedHandler?.uuid,
-                        wrappedHandlerOwner: self.wrappedHandlerCap.address
-                    )
+                if let nextTxId = self.scheduleTransaction(
+                    scheduleType: CronScheduleType.Next,
+                    timestamp: nextTime,
+                    context: context
+                ) {
+                    self.nextScheduledTransactionID = nextTxId
                 }
             }
-
+            // Schedule future transaction if needed
             if needsFuture {
-                // Estimate fees for future transaction
-                let estimateFuture = FlowTransactionScheduler.estimate(
-                    data: context,
-                    timestamp: UFix64(futureTime),
-                    priority: context.priority,
-                    executionEffort: context.executionEffort
-                )
-                
-                // Check if we got a fee estimate
-                if let requiredFee = estimateFuture.flowFee {
-                    // Check if we have enough funds
-                    if feeVault.balance >= requiredFee {
-                        // Withdraw fees and schedule
-                        let fees <- feeVault.withdraw(amount: requiredFee)
-                        let transactionId = schedulerManager.scheduleByHandler(
-                            handlerTypeIdentifier: self.getType().identifier,
-                            handlerUUID: self.uuid,
-                            data: context,
-                            timestamp: UFix64(futureTime),
-                            priority: context.priority,
-                            executionEffort: context.executionEffort,
-                            fees: <-fees as! @FlowToken.Vault
-                        )
-                        self.futureScheduledTransactionID = transactionId
-                    } else {
-                        let wrappedHandler = self.wrappedHandlerCap.borrow()
-                        emit CronScheduleFailed(
-                            txID: 0,
-                            requiredAmount: requiredFee,
-                            availableAmount: feeVault.balance,
-                            scheduleType: "future",
-                            cronExpression: self.cronExpression,
-                            handlerUUID: self.uuid,
-                            handlerOwner: self.wrappedHandlerCap.address,
-                            wrappedHandlerType: wrappedHandler?.getType()?.identifier,
-                            wrappedHandlerUUID: wrappedHandler?.uuid,
-                            wrappedHandlerOwner: self.wrappedHandlerCap.address
-                        )
-                    }
-                } else {
-                    let wrappedHandler = self.wrappedHandlerCap.borrow()
-                    emit CronEstimationFailed(
-                        txID: 0,
-                        scheduleType: "future",
-                        cronExpression: self.cronExpression,
-                        handlerUUID: self.uuid,
-                        handlerOwner: self.wrappedHandlerCap.address,
-                        wrappedHandlerType: wrappedHandler?.getType()?.identifier,
-                        wrappedHandlerUUID: wrappedHandler?.uuid,
-                        wrappedHandlerOwner: self.wrappedHandlerCap.address
-                    )
+                if let futureTxId = self.scheduleTransaction(
+                    scheduleType: CronScheduleType.Future,
+                    timestamp: futureTime,
+                    context: context
+                ) {
+                    self.futureScheduledTransactionID = futureTxId
                 }
             }
         }
