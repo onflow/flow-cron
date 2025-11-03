@@ -164,8 +164,8 @@ access(all) fun test_CronHandler_FirstExecution() {
     Test.assertEqual(1, finalCount)
 }
 
-/// Verify double-buffer pattern - first execution schedules 2 more transactions
-access(all) fun test_CronHandler_DoubleBufferAfterFirstExecution() {
+/// Verify double-buffer pattern - initial scheduling creates double-buffer immediately
+access(all) fun test_CronHandler_DoubleBufferOnInitialSchedule() {
 
     // Create cron handler with every-minute cron
     let createResult = Test.executeTransaction(
@@ -183,8 +183,9 @@ access(all) fun test_CronHandler_DoubleBufferAfterFirstExecution() {
     Test.expect(createResult, Test.beSucceeded())
 
     let initialTimestamp = getTimestamp()
+    let eventsBeforeSchedule = Test.eventsOfType(Type<FlowTransactionScheduler.Scheduled>())
 
-    // Schedule the cron handler
+    // Schedule the cron handler - this should immediately create double-buffer
     let scheduleResult = Test.executeTransaction(
         Test.Transaction(
             code: Test.readFile("../transactions/ScheduleCronHandler.cdc"),
@@ -215,6 +216,21 @@ access(all) fun test_CronHandler_DoubleBufferAfterFirstExecution() {
     // Should have scheduled 2 new transactions (double-buffer pattern)
     Test.assertEqual(2, newEvents)
     Test.assertEqual(1, getCounterValue())
+
+    // Verify both next and future are scheduled
+    let statusResult = Test.executeScript(
+        Test.readFile("../scripts/GetCronScheduleStatus.cdc"),
+        [testAccount.address, /storage/TestCronHandler]
+    )
+    Test.expect(statusResult, Test.beSucceeded())
+
+    let status = statusResult.returnValue! as! {String: AnyStruct?}
+    let nextTxID = status["nextTransactionID"] as! UInt64?
+    let futureTxID = status["futureTransactionID"] as! UInt64?
+
+    Test.assert(nextTxID != nil, message: "Next transaction should be scheduled")
+    Test.assert(futureTxID != nil, message: "Future transaction should be scheduled")
+    Test.assert(futureTxID! > nextTxID!, message: "Future ID should be greater than next ID")
 }
 
 /// Verify cron scheduling calculates correct next execution times
@@ -900,6 +916,182 @@ access(all) fun test_FullCronCycle_MultipleExecutions() {
     // Verify 60-second interval (for "* * * * *" pattern)
     let timeDiff = futureTxTimestamp! - nextTxTimestamp!
     Test.assertEqual(60.0, timeDiff)
+}
+
+/// Verify continuous execution over 5 cycles with no rejections
+access(all) fun test_ContinuousExecutionWithoutRejections() {
+
+    // Create cron handler
+    let createResult = Test.executeTransaction(
+        Test.Transaction(
+            code: Test.readFile("../transactions/CreateCronHandler.cdc"),
+            authorizers: [testAccount.address],
+            signers: [testAccount],
+            arguments: [
+                "* * * * *",  // Every minute
+                /storage/CounterTransactionHandler as StoragePath,
+                /storage/TestCronHandler as StoragePath
+            ]
+        )
+    )
+    Test.expect(createResult, Test.beSucceeded())
+
+    // Schedule the cron handler
+    let scheduleResult = Test.executeTransaction(
+        Test.Transaction(
+            code: Test.readFile("../transactions/ScheduleCronHandler.cdc"),
+            authorizers: [testAccount.address],
+            signers: [testAccount],
+            arguments: [
+                /storage/TestCronHandler as StoragePath,
+                nil as AnyStruct?,
+                1 as UInt8,
+                1000 as UInt64
+            ]
+        )
+    )
+    Test.expect(scheduleResult, Test.beSucceeded())
+
+    // Track execution events to ensure all complete successfully
+    let initialExecutions = Test.eventsOfType(Type<FlowCron.CronScheduleExecuted>())
+
+    // Execute 5 cycles
+    var currentTimestamp = getTimestamp()
+    let scheduledEvents = Test.eventsOfType(Type<FlowTransactionScheduler.Scheduled>())
+    var nextEvent = scheduledEvents[scheduledEvents.length - 1] as! FlowTransactionScheduler.Scheduled
+
+    // Cycle through 5 executions
+    var cycle = 0
+    while cycle < 5 {
+        cycle = cycle + 1
+
+        // Move time to trigger execution
+        let timeToAdvance = (nextEvent.timestamp - currentTimestamp) + 1.0
+        Test.moveTime(by: Fix64(timeToAdvance))
+        currentTimestamp = getTimestamp()
+
+        // Verify counter incremented
+        let expectedCounter = cycle
+        let actualCounter = getCounterValue()
+        Test.assertEqual(expectedCounter, actualCounter)
+
+        // Get next scheduled event for next cycle
+        let allEvents = Test.eventsOfType(Type<FlowTransactionScheduler.Scheduled>())
+        if allEvents.length > 0 {
+            // Find the next unexecuted event by looking at newly scheduled ones
+            var foundNext = false
+            var i = allEvents.length - 1
+            while i >= 0 && !foundNext {
+                let evt = allEvents[i] as! FlowTransactionScheduler.Scheduled
+                if evt.timestamp > currentTimestamp {
+                    nextEvent = evt
+                    foundNext = true
+                }
+                i = i - 1
+            }
+        }
+    }
+
+    // Verify we had 5 successful executions
+    let finalExecutions = Test.eventsOfType(Type<FlowCron.CronScheduleExecuted>())
+    let newExecutions = finalExecutions.length - initialExecutions.length
+    Test.assertEqual(5, newExecutions)
+
+    // Verify counter reached 5
+    Test.assertEqual(5, getCounterValue())
+
+    // Verify double-buffer is still maintained
+    let finalStatus = Test.executeScript(
+        Test.readFile("../scripts/GetCronScheduleStatus.cdc"),
+        [testAccount.address, /storage/TestCronHandler]
+    )
+    Test.expect(finalStatus, Test.beSucceeded())
+
+    let status = finalStatus.returnValue! as! {String: AnyStruct?}
+    let nextTxID = status["nextTransactionID"] as! UInt64?
+    let futureTxID = status["futureTransactionID"] as! UInt64?
+
+    Test.assert(nextTxID != nil, message: "Next transaction should still be scheduled")
+    Test.assert(futureTxID != nil, message: "Future transaction should still be scheduled")
+}
+
+/// Verify executed transactions change status to Executed
+access(all) fun test_ExecutedTransactionsChangeStatus() {
+
+    // Create and schedule cron handler
+    let createResult = Test.executeTransaction(
+        Test.Transaction(
+            code: Test.readFile("../transactions/CreateCronHandler.cdc"),
+            authorizers: [testAccount.address],
+            signers: [testAccount],
+            arguments: [
+                "* * * * *",
+                /storage/CounterTransactionHandler as StoragePath,
+                /storage/TestCronHandler as StoragePath
+            ]
+        )
+    )
+    Test.expect(createResult, Test.beSucceeded())
+
+    let scheduleResult = Test.executeTransaction(
+        Test.Transaction(
+            code: Test.readFile("../transactions/ScheduleCronHandler.cdc"),
+            authorizers: [testAccount.address],
+            signers: [testAccount],
+            arguments: [
+                /storage/TestCronHandler as StoragePath,
+                nil as AnyStruct?,
+                1 as UInt8,
+                1000 as UInt64
+            ]
+        )
+    )
+    Test.expect(scheduleResult, Test.beSucceeded())
+
+    // Get the initial scheduled transaction ID
+    let scheduledEvents = Test.eventsOfType(Type<FlowTransactionScheduler.Scheduled>())
+    let firstEvent = scheduledEvents[scheduledEvents.length - 1] as! FlowTransactionScheduler.Scheduled
+    let firstTxID = firstEvent.id
+
+    // Verify transaction exists before execution with status = Scheduled (1)
+    let txDataCode = "import FlowTransactionScheduler from \"FlowTransactionScheduler\"\n\n"
+        .concat("access(all) fun main(txID: UInt64): {String: AnyStruct}? {\n")
+        .concat("    if let txData = FlowTransactionScheduler.getTransactionData(id: txID) {\n")
+        .concat("        return {\n")
+        .concat("            \"id\": txData.id,\n")
+        .concat("            \"status\": txData.status.rawValue,\n")
+        .concat("            \"scheduledTimestamp\": txData.scheduledTimestamp\n")
+        .concat("        }\n")
+        .concat("    }\n")
+        .concat("    return nil\n")
+        .concat("}")
+
+    let txDataBefore = Test.executeScript(txDataCode, [firstTxID])
+    Test.expect(txDataBefore, Test.beSucceeded())
+    Test.assert(txDataBefore.returnValue != nil, message: "Transaction should exist before execution")
+
+    let beforeData = txDataBefore.returnValue! as! {String: AnyStruct}
+    let beforeStatus = beforeData["status"]! as! UInt8
+    Test.assertEqual(1, Int(beforeStatus))  // Status.Scheduled = 1
+
+    // Move time to trigger execution
+    let initialTimestamp = getTimestamp()
+    let timeToAdvance = (firstEvent.timestamp - initialTimestamp) + 1.0
+    Test.moveTime(by: Fix64(timeToAdvance))
+
+    // Verify counter incremented
+    Test.assertEqual(1, getCounterValue())
+
+    // Verify executed transaction status changed to Executed (2)
+    let txDataAfter = Test.executeScript(txDataCode, [firstTxID])
+    Test.expect(txDataAfter, Test.beSucceeded())
+
+    // Transaction should still exist but with Executed status
+    Test.assert(txDataAfter.returnValue != nil, message: "Transaction record should still exist after execution")
+
+    let afterData = txDataAfter.returnValue! as! {String: AnyStruct}
+    let afterStatus = afterData["status"]! as! UInt8
+    Test.assertEqual(2, Int(afterStatus))  // Status.Executed = 2
 }
 
 /// Helper: Get CronInfo
