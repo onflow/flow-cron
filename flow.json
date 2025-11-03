@@ -138,11 +138,31 @@
         "type": "file",
         "location": "emulator-account.pkey"
       }
+    },
+    "testnet-account": {
+      "address": "2d7a015aeaac2429",
+      "key": {
+        "type": "file",
+        "location": "testnet-account.pkey"
+      }
     }
   },
   "deployments": {
     "emulator": {
-      "emulator-account": ["FlowCron", "FlowCronUtils"]
+      "emulator-account": [
+        "FlowCron",
+        "FlowCronUtils",
+        "Counter",
+        "CounterTransactionHandler"
+      ]
+    },
+    "testnet": {
+      "testnet-account": [
+        "FlowCron",
+        "FlowCronUtils",
+        "Counter",
+        "CounterTransactionHandler"
+      ]
     }
   }
 }

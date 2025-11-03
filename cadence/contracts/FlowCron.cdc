@@ -140,6 +140,7 @@ access(all) contract FlowCron {
                         wrappedHandlerUUID: wrappedHandler?.uuid,
                         wrappedHandlerOwner: self.wrappedHandlerCap.address
                     )
+                    self.currentScheduledTransactionID = nil
                     return
                 }
             }
@@ -161,6 +162,7 @@ access(all) contract FlowCron {
                 wrappedHandlerUUID: wrappedHandler.uuid,
                 wrappedHandlerOwner: self.wrappedHandlerCap.address
             )
+            self.currentScheduledTransactionID = nil
         }
 
         /// Syncs internal schedule state with external transaction scheduler
@@ -178,9 +180,12 @@ access(all) contract FlowCron {
         access(self) fun syncSchedule() {
             var hasValidNext = false
             var hasValidFuture = false
-            
+
             if let nextID = self.nextScheduledTransactionID {
-                if let txData = FlowTransactionScheduler.getTransactionData(id: nextID) {
+                // Don't clear if this is the currently executing transaction
+                if nextID == self.currentScheduledTransactionID {
+                    hasValidNext = true
+                } else if let txData = FlowTransactionScheduler.getTransactionData(id: nextID) {
                     if txData.status == FlowTransactionScheduler.Status.Scheduled {
                         hasValidNext = true
                     } else {
@@ -191,7 +196,10 @@ access(all) contract FlowCron {
                 }
             }
             if let futureID = self.futureScheduledTransactionID {
-                if let txData = FlowTransactionScheduler.getTransactionData(id: futureID) {
+                // Don't clear if this is the currently executing transaction
+                if futureID == self.currentScheduledTransactionID {
+                    hasValidFuture = true
+                } else if let txData = FlowTransactionScheduler.getTransactionData(id: futureID) {
                     if txData.status == FlowTransactionScheduler.Status.Scheduled {
                         hasValidFuture = true
                     } else {
@@ -201,7 +209,7 @@ access(all) contract FlowCron {
                     self.futureScheduledTransactionID = nil
                 }
             }
-            
+
             // Update scheduled status based on transaction state
             if !hasValidNext && !hasValidFuture {
                 // Reset if no valid transactions remain (allows rescheduling)
