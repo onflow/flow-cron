@@ -6,7 +6,7 @@ import "FungibleToken"
 import "FlowCronUtils"
 
 /// Schedules a CronHandler for recurring execution
-/// The system will automatically handle double scheduling and rescheduling
+/// Schedules BOTH executor and keeper for the first cron tick to bootstrap the perpetual chain
 transaction(
     cronHandlerStoragePath: StoragePath,
     wrappedData: AnyStruct?,
@@ -18,8 +18,10 @@ transaction(
     let cronHandlerCap: Capability<auth(FlowTransactionScheduler.Execute) &{FlowTransactionScheduler.TransactionHandler}>
     let feeProviderCap: Capability<auth(FungibleToken.Withdraw) &FlowToken.Vault>
     let managerCap: Capability<auth(FlowTransactionSchedulerUtils.Owner) &{FlowTransactionSchedulerUtils.Manager}>
-    let context: FlowCron.CronContext
-    let fees: @FlowToken.Vault
+    let executorContext: FlowCron.CronContext
+    let keeperContext: FlowCron.CronContext
+    let executorFees: @FlowToken.Vault
+    let keeperFees: @FlowToken.Vault
 
     prepare(signer: auth(BorrowValue, IssueStorageCapabilityController, SaveValue) &Account) {
         // Ensure Manager exists
@@ -57,46 +59,86 @@ transaction(
             FlowTransactionSchedulerUtils.managerStoragePath
         )
 
-        // Create CronContext
-        self.context = FlowCron.CronContext(
+        // Create EXECUTOR context (user's priority and effort)
+        self.executorContext = FlowCron.CronContext(
             schedulerManagerCap: self.managerCap,
             feeProviderCap: self.feeProviderCap,
             priority: FlowTransactionScheduler.Priority(rawValue: priority)!,
             executionEffort: executionEffort,
-            wrappedData: wrappedData
+            wrappedData: wrappedData,
+            executionMode: FlowCron.ExecutionMode.Executor
         )
 
-        // Estimate and withdraw fees
-        let estimate = FlowTransactionScheduler.estimate(
-            data: self.context,
+        // Create KEEPER context (fixed priority and effort)
+        self.keeperContext = FlowCron.CronContext(
+            schedulerManagerCap: self.managerCap,
+            feeProviderCap: self.feeProviderCap,
+            priority: FlowCron.KEEPER_PRIORITY,
+            executionEffort: FlowCron.KEEPER_EXECUTION_EFFORT,
+            wrappedData: wrappedData,
+            executionMode: FlowCron.ExecutionMode.Keeper
+        )
+
+        // Estimate fees for EXECUTOR
+        let executorEstimate = FlowTransactionScheduler.estimate(
+            data: self.executorContext,
             timestamp: UFix64(self.nextExecutionTime),
             priority: FlowTransactionScheduler.Priority(rawValue: priority)!,
             executionEffort: executionEffort
         )
 
-        let requiredFee = estimate.flowFee ?? panic("Cannot estimate transaction fee")
+        let executorFee = executorEstimate.flowFee ?? panic("Cannot estimate executor fee")
 
+        // Estimate fees for KEEPER
+        let keeperEstimate = FlowTransactionScheduler.estimate(
+            data: self.keeperContext,
+            timestamp: UFix64(self.nextExecutionTime),
+            priority: FlowCron.KEEPER_PRIORITY,
+            executionEffort: FlowCron.KEEPER_EXECUTION_EFFORT
+        )
+
+        let keeperFee = keeperEstimate.flowFee ?? panic("Cannot estimate keeper fee")
+
+        // Calculate total fees
+        let totalFee = executorFee + keeperFee
+
+        // Borrow fee vault and check balance
         let feeVault = signer.storage.borrow<auth(FungibleToken.Withdraw) &FlowToken.Vault>(from: /storage/flowTokenVault)
             ?? panic("Flow token vault not found")
 
-        if feeVault.balance < requiredFee {
-            panic("Insufficient funds: required ".concat(requiredFee.toString()).concat(", available ").concat(feeVault.balance.toString()))
+        if feeVault.balance < totalFee {
+            panic("Insufficient funds: required ".concat(totalFee.toString()).concat(" FLOW (executor: ").concat(executorFee.toString()).concat(", keeper: ").concat(keeperFee.toString()).concat("), available ").concat(feeVault.balance.toString()))
         }
 
-        self.fees <- feeVault.withdraw(amount: requiredFee) as! @FlowToken.Vault
+        // Withdraw fees for BOTH transactions
+        self.executorFees <- feeVault.withdraw(amount: executorFee) as! @FlowToken.Vault
+        self.keeperFees <- feeVault.withdraw(amount: keeperFee) as! @FlowToken.Vault
     }
 
     execute {
-        // Schedule the cron transaction
-        let transactionId = self.manager.schedule(
+        // Schedule EXECUTOR transaction (user code runs at first tick)
+        let executorTxID = self.manager.schedule(
             handlerCap: self.cronHandlerCap,
-            data: self.context,
+            data: self.executorContext,
             timestamp: UFix64(self.nextExecutionTime),
             priority: FlowTransactionScheduler.Priority(rawValue: priority)!,
             executionEffort: executionEffort,
-            fees: <-self.fees
+            fees: <-self.executorFees
         )
 
-        log("Scheduled cron transaction with ID: ".concat(transactionId.toString()).concat(" at time: ").concat(self.nextExecutionTime.toString()))
+        // Schedule KEEPER transaction (schedules next cycle at first tick)
+        let keeperTxID = self.manager.schedule(
+            handlerCap: self.cronHandlerCap,
+            data: self.keeperContext,
+            timestamp: UFix64(self.nextExecutionTime),
+            priority: FlowCron.KEEPER_PRIORITY,
+            executionEffort: FlowCron.KEEPER_EXECUTION_EFFORT,
+            fees: <-self.keeperFees
+        )
+
+        log("Cron handler initialized successfully")
+        log("First execution at: ".concat(self.nextExecutionTime.toString()))
+        log("Executor TX ID: ".concat(executorTxID.toString()))
+        log("Keeper TX ID: ".concat(keeperTxID.toString()))
     }
 }
