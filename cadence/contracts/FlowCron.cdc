@@ -44,7 +44,7 @@ access(all) contract FlowCron {
     /// Emitted when keeper successfully schedules next cycle
     access(all) event CronKeeperExecuted(
         txID: UInt64,
-        nextExecutorTxID: UInt64,
+        nextExecutorTxID: UInt64?,
         nextKeeperTxID: UInt64,
         nextExecutorTime: UInt64,
         nextKeeperTime: UInt64,
@@ -59,8 +59,17 @@ access(all) contract FlowCron {
         txID: UInt64,
         cronExpression: String,
         handlerUUID: UInt64,
-        wrappedHandlerType: String,
-        wrappedHandlerUUID: UInt64
+        wrappedHandlerType: String?,
+        wrappedHandlerUUID: UInt64?
+    )
+
+    /// Emitted when executor scheduling falls back to Medium priority
+    access(all) event CronExecutorFallback(
+        txID: UInt64,
+        cronExpression: String,
+        handlerUUID: UInt64,
+        wrappedHandlerType: String?,
+        wrappedHandlerUUID: UInt64?
     )
 
     /// Emitted when scheduling is rejected (due to duplicate/unauthorized scheduling)
@@ -94,7 +103,7 @@ access(all) contract FlowCron {
         cronExpression: String,
         handlerUUID: UInt64,
         wrappedHandlerType: String?,
-        wrappedHandlerUUID: UInt64?,
+        wrappedHandlerUUID: UInt64?
     )
 
     /// Execution mode selector for dual-mode handler
@@ -197,6 +206,14 @@ access(all) contract FlowCron {
                     executionEffort: context.executionEffort,
                     context: context
                 )
+                let wrappedHandler = self.wrappedHandlerCap.borrow()
+                emit CronExecutorFallback(
+                    txID: txID,
+                    cronExpression: self.cronExpression,
+                    handlerUUID: self.uuid,
+                    wrappedHandlerType: wrappedHandler?.getType()?.identifier,
+                    wrappedHandlerUUID: wrappedHandler?.uuid
+                )
             }
 
             // Schedule keeper SECOND with 1 second offset to prevent race condition
@@ -212,12 +229,11 @@ access(all) contract FlowCron {
             // Store keeper transaction ID to prevent duplicate scheduling
             self.nextScheduledKeeperID = keeperTxID
 
-            // Emit appropriate event based on executor scheduling result
+            // Emit keeper executed event
             let wrappedHandler = self.wrappedHandlerCap.borrow()
-            // Always emit keeper executed event
             emit CronKeeperExecuted(
                 txID: txID,
-                nextExecutorTxID: executorTxID!,
+                nextExecutorTxID: executorTxID,
                 nextKeeperTxID: keeperTxID,
                 nextExecutorTime: nextTick,
                 nextKeeperTime: nextTick + FlowCron.KEEPER_OFFSET_SECONDS,
