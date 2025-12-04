@@ -278,6 +278,7 @@ access(all) contract FlowCron {
             )
 
             // Handle estimation result
+            let wrappedHandler = self.wrappedHandlerCap.borrow()
             if let requiredFee = estimate.flowFee {
                 // Check sufficient balance
                 if feeVault.balance >= requiredFee {
@@ -295,7 +296,6 @@ access(all) contract FlowCron {
                     return txID
                 } else {
                     // Insufficient funds, emits event
-                    let wrappedHandler = self.wrappedHandlerCap.borrow()
                     emit CronScheduleFailed(
                         txID: txID,
                         executionMode: mode.rawValue,
@@ -306,11 +306,11 @@ access(all) contract FlowCron {
                         wrappedHandlerType: wrappedHandler?.getType()?.identifier,
                         wrappedHandlerUUID: wrappedHandler?.uuid
                     )
+                    return nil
                 }
             }
 
             // If we arrive here, estimation failed so emit event and return nil
-            let wrappedHandler = self.wrappedHandlerCap.borrow()
             emit CronEstimationFailed(
                 txID: txID,
                 executionMode: mode.rawValue,
