@@ -4,13 +4,13 @@ import "FlowTransactionScheduler"
 import "FlowToken"
 import "FungibleToken"
 
-/// Cancels all scheduled cron transactions for a CronHandler
-/// Refunds unused fees back to the signer's FlowToken vault
+/// Cancels both scheduled transactions (executor and keeper) for a CronHandler
+/// This completely stops the cron job
 transaction(cronHandlerStoragePath: StoragePath) {
     let manager: auth(FlowTransactionSchedulerUtils.Owner) &{FlowTransactionSchedulerUtils.Manager}
     let feeReceiver: &{FungibleToken.Receiver}
-    let nextID: UInt64?
-    let futureID: UInt64?
+    let executorID: UInt64?
+    let keeperID: UInt64?
 
     prepare(signer: auth(BorrowValue, IssueStorageCapabilityController, SaveValue) &Account) {
         // Ensure Manager exists
@@ -27,19 +27,19 @@ transaction(cronHandlerStoragePath: StoragePath) {
         self.feeReceiver = signer.storage.borrow<&{FungibleToken.Receiver}>(from: /storage/flowTokenVault)
             ?? panic("Could not borrow FlowToken receiver")
 
-        // Get transaction IDs from CronHandler
+        // Get both transaction IDs from CronHandler
         let cronHandler = signer.storage.borrow<&FlowCron.CronHandler>(from: cronHandlerStoragePath)
             ?? panic("CronHandler not found at specified path")
 
-        self.nextID = cronHandler.getNextScheduledTransactionID()
-        self.futureID = cronHandler.getFutureScheduledTransactionID()
+        self.executorID = cronHandler.getNextScheduledExecutorID()
+        self.keeperID = cronHandler.getNextScheduledKeeperID()
     }
 
     execute {
         var cancelledCount = 0
 
-        // Cancel next scheduled transaction
-        if let id = self.nextID {
+        // Cancel executor transaction
+        if let id = self.executorID {
             if let txData = FlowTransactionScheduler.getTransactionData(id: id) {
                 if txData.status == FlowTransactionScheduler.Status.Scheduled {
                     let refund <- self.manager.cancel(id: id)
@@ -49,8 +49,8 @@ transaction(cronHandlerStoragePath: StoragePath) {
             }
         }
 
-        // Cancel future scheduled transaction
-        if let id = self.futureID {
+        // Cancel keeper transaction
+        if let id = self.keeperID {
             if let txData = FlowTransactionScheduler.getTransactionData(id: id) {
                 if txData.status == FlowTransactionScheduler.Status.Scheduled {
                     let refund <- self.manager.cancel(id: id)
@@ -60,6 +60,6 @@ transaction(cronHandlerStoragePath: StoragePath) {
             }
         }
 
-        log("Cancelled ".concat(cancelledCount.toString()).concat(" of 2 transactions"))
+        log("Cancelled ".concat(cancelledCount.toString()).concat(" transaction(s)"))
     }
 }

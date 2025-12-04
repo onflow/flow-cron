@@ -5,14 +5,16 @@ This guide provides step-by-step commands to fully test the FlowCron implementat
 ## Test Objective
 
 Schedule a recurring transaction that executes **every minute** and increments a counter by 1. We'll verify:
+
 - Counter increments correctly (by 1 each minute)
-- Double-buffer pattern maintains 2 scheduled transactions (next + future)
-- Automatic rescheduling works after each execution
-- CronInfo metadata is accurate
+- Keeper/Executor architecture works correctly
+- Automatic rescheduling works after each keeper execution
+- All transactions execute without rejections
 
 ## Prerequisites
 
 Before starting, ensure you have:
+
 - Flow CLI installed (`flow version`)
 - TESTNET account with FLOW tokens (use faucet: https://testnet-faucet.onflow.org/)
 - Account configured in flow.json
@@ -22,6 +24,7 @@ Before starting, ensure you have:
 ### Step 1: Setup TESTNET Account
 
 Ensure your TESTNET account is configured in `flow.json` and has sufficient FLOW tokens. You'll need tokens for:
+
 - Contract deployment fees
 - Transaction execution fees for the cron job
 
@@ -36,13 +39,14 @@ flow project deploy --network=testnet
 ```
 
 **Expected output:**
-```
-Deploying 4 contracts for accounts: emulator-account
 
-FlowCronUtils -> 0xf8d6e0586b0a20c7
-FlowCron -> 0xf8d6e0586b0a20c7
-Counter -> 0xf8d6e0586b0a20c7
-CounterTransactionHandler -> 0xf8d6e0586b0a20c7
+```text
+Deploying 4 contracts for accounts: testnet-account
+
+FlowCronUtils -> 0x...
+FlowCron -> 0x...
+Counter -> 0x...
+CounterTransactionHandler -> 0x...
 
 ✅ All contracts deployed successfully
 ```
@@ -60,7 +64,8 @@ flow transactions send cadence/tests/mocks/transactions/InitCounterTransactionHa
 Replace `testnet-account` with your account name from flow.json.
 
 **Expected output:**
-```
+
+```text
 Transaction ID: <some-hash>
 Status: ✅ SEALED
 ```
@@ -75,7 +80,8 @@ flow scripts execute cadence/tests/mocks/scripts/GetCounter.cdc \
 ```
 
 **Expected output:**
-```
+
+```text
 Result: 0
 ```
 
@@ -93,7 +99,8 @@ flow transactions send cadence/transactions/CreateCronHandler.cdc \
 ```
 
 **Expected output:**
-```
+
+```text
 Transaction ID: <some-hash>
 Status: ✅ SEALED
 ```
@@ -112,6 +119,7 @@ flow scripts execute cadence/scripts/GetCronInfo.cdc \
 Replace `<YOUR_TESTNET_ADDRESS>` with your account address (e.g., `0x1234567890abcdef`).
 
 **Expected output (example):**
+
 ```json
 {
   "cronExpression": "* * * * *",
@@ -124,48 +132,54 @@ Replace `<YOUR_TESTNET_ADDRESS>` with your account address (e.g., `0x1234567890a
     "domIsStar": true,
     "dowIsStar": true
   },
-  "nextExecution": 1699999999,
-  "futureExecution": 1700000059,
+  "nextScheduledKeeperID": null,
+  "nextScheduledExecutorID": null,
   "wrappedHandlerType": "A.0000000000000007.CounterTransactionHandler.Handler",
   "wrappedHandlerUUID": 123
 }
 ```
 
 **Key observations:**
+
 - `cronExpression` is `* * * * *` (every minute)
-- `nextExecution` and `futureExecution` show calculated times (not actual scheduled transactions yet)
+- `nextScheduledKeeperID` and `nextScheduledExecutorID` are `null` (no active schedule yet)
 
 ### Step 7: Schedule the Initial Cron Execution
 
-Start the cron job by scheduling the first execution:
+Start the cron job by scheduling the first execution (both executor and keeper):
 
 ```bash
 flow transactions send cadence/transactions/ScheduleCronHandler.cdc \
-  --args-json '[{"type":"Path","value":{"domain":"storage","identifier":"CounterCronHandler"}},{"type":"Optional","value":null},{"type":"UInt8","value":"2"},{"type":"UInt64","value":"500"}]' \
+  /storage/CounterCronHandler \
+  nil \
+  2 \
+  500 \
   --network=testnet \
   --signer=testnet-account
 ```
 
 **Arguments explained:**
-- `Path:/storage/CounterCronHandler` - Where the CronHandler is stored
-- `Optional(String):null` - No wrapped data needed for Counter
-- `UInt8:2` - Priority: Low (0=High, 1=Medium, 2=Low)
-- `UInt64:500` - Execution effort estimate (confirmed working value)
+
+- `/storage/CounterCronHandler` - Where the CronHandler is stored
+- `nil` - No wrapped data needed for Counter
+- `2` - Priority: Low (0=High, 1=Medium, 2=Low)
+- `500` - Execution effort (confirmed working value)
 
 **Expected output:**
-```
+
+```text
 Transaction ID: <some-hash>
 Status: ✅ SEALED
 
-Logs:
-"Scheduled cron transaction with ID: 0 at time: 1699999999"
+Events:
+  - A.<address>.FlowTransactionScheduler.Scheduled (x2)
 ```
 
-**Important:** Note the transaction ID in the logs (e.g., `0`). This is the first scheduled transaction.
+Note: Two transactions are scheduled (executor + keeper for first tick).
 
 ### Step 8: Verify Schedule Status
 
-Check that the transaction is scheduled:
+Check that the keeper transaction is scheduled:
 
 ```bash
 flow scripts execute cadence/scripts/GetCronScheduleStatus.cdc \
@@ -175,29 +189,33 @@ flow scripts execute cadence/scripts/GetCronScheduleStatus.cdc \
 ```
 
 **Expected output:**
+
 ```json
 {
-  "nextTransactionID": 0,
-  "futureTransactionID": null,
-  "nextTxStatus": 0,
-  "nextTxTimestamp": "1699999999.00000000",
-  "futureTxStatus": null,
-  "futureTxTimestamp": null
+  "cronExpression": "* * * * *",
+  "nextScheduledExecutorID": 0,
+  "nextScheduledKeeperID": 1,
+  "executorTxStatus": 1,
+  "executorTxTimestamp": "1699999999.00000000",
+  "keeperTxStatus": 1,
+  "keeperTxTimestamp": "1699999999.00000000"
 }
 ```
 
 **Key observations:**
-- `nextTransactionID` = `0` (the initial scheduled transaction)
-- `futureTransactionID` = `null` (double-buffer not active yet - will be filled on first execution)
-- `nextTxStatus` = `0` (0 = Scheduled)
+
+- `nextScheduledExecutorID` shows the executor transaction ID (runs user code)
+- `nextScheduledKeeperID` shows the keeper transaction ID (schedules next cycle)
+- Both have `status` = `1` (Scheduled)
 
 ### Step 9: Wait for First Execution
 
-The emulator will automatically execute scheduled transactions when their time arrives. On the first execution, FlowCron will:
-1. Schedule BOTH next and future executions (double-buffer pattern)
-2. Execute the Counter increment
+Wait approximately **60-90 seconds** for the first execution. The scheduler will:
 
-**Wait approximately 1 minute** (or less if the scheduled time is soon), then check the counter:
+1. Execute the Executor transaction (runs your user code - increments counter)
+2. Execute the Keeper transaction (schedules next executor + keeper)
+
+Then check the counter:
 
 ```bash
 flow scripts execute cadence/tests/mocks/scripts/GetCounter.cdc \
@@ -205,15 +223,16 @@ flow scripts execute cadence/tests/mocks/scripts/GetCounter.cdc \
 ```
 
 **Expected output:**
-```
+
+```text
 Result: 1
 ```
 
-The counter should now be `1`!
+✅ **The counter incremented to 1!**
 
-### Step 10: Verify Double-Buffer Pattern
+### Step 10: Verify Keeper/Executor Pattern
 
-After the first execution, check that the double-buffer is now active:
+After the first execution, check that the keeper scheduled the next cycle:
 
 ```bash
 flow scripts execute cadence/scripts/GetCronScheduleStatus.cdc \
@@ -223,36 +242,39 @@ flow scripts execute cadence/scripts/GetCronScheduleStatus.cdc \
 ```
 
 **Expected output:**
+
 ```json
 {
-  "nextTransactionID": 1,
-  "futureTransactionID": 2,
-  "nextTxStatus": 0,
-  "nextTxTimestamp": "1700000059.00000000",
-  "futureTxStatus": 0,
-  "futureTxTimestamp": "1700000119.00000000"
+  "cronExpression": "* * * * *",
+  "nextScheduledExecutorID": 2,
+  "nextScheduledKeeperID": 3,
+  "executorTxStatus": 1,
+  "executorTxTimestamp": "...",
+  "keeperTxStatus": 1,
+  "keeperTxTimestamp": "..."
 }
 ```
 
 **Key observations:**
-- `nextTransactionID` = `1` (next execution in ~1 minute)
-- `futureTransactionID` = `2` (backup execution in ~2 minutes)
-- Both have `status = 0` (Scheduled)
-- Timestamps are ~60 seconds apart (one minute intervals)
 
-**This confirms the double-buffer pattern is working!**
+- `nextScheduledExecutorID` shows the next executor transaction (runs user code)
+- `nextScheduledKeeperID` shows the next keeper transaction (schedules next cycle)
+- Status `1` means Scheduled
+- The keeper already scheduled the next executor + keeper pair
 
 ### Step 11: Monitor Continuous Execution
 
 Run this monitoring loop to watch the cron job in action. Execute these commands every 60-90 seconds:
 
 **Check counter value:**
+
 ```bash
 flow scripts execute cadence/tests/mocks/scripts/GetCounter.cdc \
   --network=testnet
 ```
 
 **Check schedule status:**
+
 ```bash
 flow scripts execute cadence/scripts/GetCronScheduleStatus.cdc \
   <YOUR_TESTNET_ADDRESS> \
@@ -261,6 +283,7 @@ flow scripts execute cadence/scripts/GetCronScheduleStatus.cdc \
 ```
 
 **Check CronInfo:**
+
 ```bash
 flow scripts execute cadence/scripts/GetCronInfo.cdc \
   <YOUR_TESTNET_ADDRESS> \
@@ -270,20 +293,19 @@ flow scripts execute cadence/scripts/GetCronInfo.cdc \
 
 **Expected behavior over time:**
 
-| Time | Counter | Next TX ID | Future TX ID | Notes |
-|------|---------|------------|--------------|-------|
-| Initial | 0 | 0 | null | First execution scheduled |
-| After 1 min | 1 | 1 | 2 | Double-buffer active |
-| After 2 min | 2 | 2 | 3 | Next shifts, new future scheduled |
-| After 3 min | 3 | 3 | 4 | Pattern continues |
-| After 4 min | 4 | 4 | 5 | Indefinite execution |
+| Time | Counter | Events in Log |
+|------|---------|---------------|
+| Initial | 0 | Scheduled executor + keeper |
+| After 1 min | 1 | `CronExecutorExecuted`, `CronKeeperExecuted` |
+| After 2 min | 2 | `CronExecutorExecuted`, `CronKeeperExecuted` |
+| After 3 min | 3 | `CronExecutorExecuted`, `CronKeeperExecuted` |
 
 **What to verify:**
-1. Counter increments by exactly 1 each minute
-2. Both `nextTransactionID` and `futureTransactionID` are always present (except initially)
-3. Transaction IDs increment sequentially
-4. Both transactions show `status = 0` (Scheduled)
-5. Timestamps are approximately 60 seconds apart
+
+1. ✅ Counter increments by exactly 1 each minute
+2. ✅ `CronKeeperExecuted` events show `nextExecutorTxID` and `nextKeeperTxID`
+3. ✅ `CronExecutorExecuted` events confirm user code ran
+4. ✅ No `CronScheduleRejected` events
 
 ### Step 12: Stop the Cron Job
 
@@ -297,17 +319,23 @@ flow transactions send cadence/transactions/CancelCronSchedule.cdc \
 ```
 
 **Expected output:**
-```
+
+```text
 Transaction ID: <some-hash>
 Status: ✅ SEALED
 
+Events:
+  - A.<address>.FlowTransactionScheduler.Canceled (x2)
+
 Logs:
-"Cancelled 2 of 2 transactions"
+  - "Cancelled 2 transaction(s)"
 ```
+
+This cancels both the executor and keeper transactions, completely stopping the cron job.
 
 ### Step 13: Verify Cancellation
 
-Confirm all scheduled transactions were cancelled:
+Confirm the transactions were cancelled:
 
 ```bash
 flow scripts execute cadence/scripts/GetCronScheduleStatus.cdc \
@@ -317,18 +345,23 @@ flow scripts execute cadence/scripts/GetCronScheduleStatus.cdc \
 ```
 
 **Expected output:**
+
 ```json
 {
-  "nextTransactionID": null,
-  "futureTransactionID": null,
-  "nextTxStatus": null,
-  "nextTxTimestamp": null,
-  "futureTxStatus": null,
-  "futureTxTimestamp": null
+  "cronExpression": "* * * * *",
+  "nextScheduledExecutorID": null,
+  "nextScheduledKeeperID": null,
+  "executorTxStatus": null,
+  "executorTxTimestamp": null,
+  "keeperTxStatus": null,
+  "keeperTxTimestamp": null
 }
 ```
 
+Both `nextScheduledExecutorID` and `nextScheduledKeeperID` are null, indicating the cron job is fully stopped.
+
 **Check final counter value:**
+
 ```bash
 flow scripts execute cadence/tests/mocks/scripts/GetCounter.cdc \
   --network=testnet
@@ -340,11 +373,14 @@ The counter should remain at its last value (e.g., `4` if it ran for 4 minutes).
 
 ### Test 1: Restart After Cancellation
 
-After cancelling, you can restart the cron job. Repeat Step 7 to schedule again:
+After cancelling, you can restart the cron job:
 
 ```bash
 flow transactions send cadence/transactions/ScheduleCronHandler.cdc \
-  --args-json '[{"type":"Path","value":{"domain":"storage","identifier":"CounterCronHandler"}},{"type":"Optional","value":null},{"type":"UInt8","value":"2"},{"type":"UInt64","value":"500"}]' \
+  /storage/CounterCronHandler \
+  nil \
+  2 \
+  500 \
   --network=testnet \
   --signer=testnet-account
 ```
@@ -356,6 +392,7 @@ flow transactions send cadence/transactions/ScheduleCronHandler.cdc \
 Create additional CronHandlers with different schedules:
 
 **Every 5 minutes:**
+
 ```bash
 flow transactions send cadence/transactions/CreateCronHandler.cdc \
   "*/5 * * * *" \
@@ -366,6 +403,7 @@ flow transactions send cadence/transactions/CreateCronHandler.cdc \
 ```
 
 **Every hour (on the hour):**
+
 ```bash
 flow transactions send cadence/transactions/CreateCronHandler.cdc \
   "0 * * * *" \
@@ -380,13 +418,18 @@ flow transactions send cadence/transactions/CreateCronHandler.cdc \
 Watch for FlowCron events on TESTNET using Flowdiver (https://testnet.flowdiver.io/).
 
 Search for your account address and look for these events:
-- `CronScheduleExecuted` - Each successful execution
+
+- `CronKeeperExecuted` - Keeper successfully scheduled next cycle
+- `CronExecutorExecuted` - Executor successfully ran user code
+- `CronExecutorFallback` - Executor fell back from High to Medium priority
+- `CronScheduleRejected` - Duplicate/unauthorized keeper was blocked
 - `CronScheduleFailed` - If insufficient funds
 - `CronEstimationFailed` - If fee estimation fails
 
 Events include details like:
+
 - `txID` - The executed transaction ID
-- `nextTxID` - Next scheduled transaction
-- `futureTxID` - Future scheduled transaction
+- `nextExecutorTxID` - Next scheduled executor
+- `nextKeeperTxID` - Next scheduled keeper
 - `cronExpression` - The cron pattern
 - `handlerUUID` - Handler identifier
