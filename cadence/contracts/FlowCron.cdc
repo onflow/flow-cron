@@ -129,6 +129,12 @@ access(all) contract FlowCron {
         /// Used to prevent duplicate/unauthorized keeper scheduling
         access(self) var nextScheduledKeeperID: UInt64?
 
+        /// Next scheduled executor transaction ID
+        /// - nil: No executor scheduled yet
+        /// - non-nil: ID of the NEXT executor transaction that will run user code
+        /// Used for complete cancellation support
+        access(self) var nextScheduledExecutorID: UInt64?
+
         init(
             cronExpression: String,
             wrappedHandlerCap: Capability<auth(FlowTransactionScheduler.Execute) &{FlowTransactionScheduler.TransactionHandler}>
@@ -142,6 +148,7 @@ access(all) contract FlowCron {
             self.cronSpec = FlowCronUtils.parse(expression: cronExpression) ?? panic("Invalid cron expression: ".concat(cronExpression))
             self.wrappedHandlerCap = wrappedHandlerCap
             self.nextScheduledKeeperID = nil
+            self.nextScheduledExecutorID = nil
         }
         
         /// Main execution entry point for scheduled transactions
@@ -216,6 +223,8 @@ access(all) contract FlowCron {
                     wrappedHandlerUUID: wrappedHandler?.uuid
                 )
             }
+            // Store executor transaction ID for cancellation support
+            self.nextScheduledExecutorID = executorTxID
 
             // Schedule keeper SECOND with 1 second offset to prevent race condition
             // Offset ensures different timestamp slots -> different blocks -> no collision
@@ -357,6 +366,11 @@ access(all) contract FlowCron {
             return self.nextScheduledKeeperID
         }
 
+        /// Returns the next scheduled executor transaction ID if one exists
+        access(all) view fun getNextScheduledExecutorID(): UInt64? {
+            return self.nextScheduledExecutorID
+        }
+
         access(all) view fun getViews(): [Type] {
             var views: [Type] = [
                 Type<MetadataViews.Display>(),
@@ -404,6 +418,7 @@ access(all) contract FlowCron {
                         cronExpression: self.cronExpression,
                         cronSpec: self.cronSpec,
                         nextScheduledKeeperID: self.nextScheduledKeeperID,
+                        nextScheduledExecutorID: self.nextScheduledExecutorID,
                         wrappedHandlerType: wrappedHandler?.getType()?.identifier,
                         wrappedHandlerUUID: wrappedHandler?.uuid
                     )
@@ -454,6 +469,8 @@ access(all) contract FlowCron {
         access(all) let cronSpec: FlowCronUtils.CronSpec
         /// Next scheduled keeper transaction ID
         access(all) let nextScheduledKeeperID: UInt64?
+        /// Next scheduled executor transaction ID
+        access(all) let nextScheduledExecutorID: UInt64?
         /// Type identifier of wrapped handler
         access(all) let wrappedHandlerType: String?
         /// UUID of wrapped handler resource
@@ -463,12 +480,14 @@ access(all) contract FlowCron {
             cronExpression: String,
             cronSpec: FlowCronUtils.CronSpec,
             nextScheduledKeeperID: UInt64?,
+            nextScheduledExecutorID: UInt64?,
             wrappedHandlerType: String?,
             wrappedHandlerUUID: UInt64?
         ) {
             self.cronExpression = cronExpression
             self.cronSpec = cronSpec
             self.nextScheduledKeeperID = nextScheduledKeeperID
+            self.nextScheduledExecutorID = nextScheduledExecutorID
             self.wrappedHandlerType = wrappedHandlerType
             self.wrappedHandlerUUID = wrappedHandlerUUID
         }

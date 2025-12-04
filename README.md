@@ -109,6 +109,7 @@ access(all) resource CronHandler: FlowTransactionScheduler.TransactionHandler, V
 
     // Scheduling state (internal)
     access(self) var nextScheduledKeeperID: UInt64?
+    access(self) var nextScheduledExecutorID: UInt64?
 
     // TransactionHandler interface
     access(FlowTransactionScheduler.Execute) fun executeTransaction(id: UInt64, data: AnyStruct?)
@@ -117,6 +118,7 @@ access(all) resource CronHandler: FlowTransactionScheduler.TransactionHandler, V
     access(all) view fun getCronExpression(): String
     access(all) view fun getCronSpec(): FlowCronUtils.CronSpec
     access(all) view fun getNextScheduledKeeperID(): UInt64?
+    access(all) view fun getNextScheduledExecutorID(): UInt64?
 
     // ViewResolver methods
     access(all) view fun getViews(): [Type]
@@ -159,6 +161,7 @@ access(all) struct CronInfo {
     access(all) let cronExpression: String
     access(all) let cronSpec: FlowCronUtils.CronSpec
     access(all) let nextScheduledKeeperID: UInt64?
+    access(all) let nextScheduledExecutorID: UInt64?
     access(all) let wrappedHandlerType: String?
     access(all) let wrappedHandlerUUID: UInt64?
 }

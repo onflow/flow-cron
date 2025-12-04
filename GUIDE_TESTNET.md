@@ -133,6 +133,7 @@ Replace `<YOUR_TESTNET_ADDRESS>` with your account address (e.g., `0x1234567890a
     "dowIsStar": true
   },
   "nextScheduledKeeperID": null,
+  "nextScheduledExecutorID": null,
   "wrappedHandlerType": "A.0000000000000007.CounterTransactionHandler.Handler",
   "wrappedHandlerUUID": 123
 }
@@ -141,7 +142,7 @@ Replace `<YOUR_TESTNET_ADDRESS>` with your account address (e.g., `0x1234567890a
 **Key observations:**
 
 - `cronExpression` is `* * * * *` (every minute)
-- `nextScheduledKeeperID` is `null` (no active schedule yet)
+- `nextScheduledKeeperID` and `nextScheduledExecutorID` are `null` (no active schedule yet)
 
 ### Step 7: Schedule the Initial Cron Execution
 
@@ -192,7 +193,10 @@ flow scripts execute cadence/scripts/GetCronScheduleStatus.cdc \
 ```json
 {
   "cronExpression": "* * * * *",
+  "nextScheduledExecutorID": 0,
   "nextScheduledKeeperID": 1,
+  "executorTxStatus": 1,
+  "executorTxTimestamp": "1699999999.00000000",
   "keeperTxStatus": 1,
   "keeperTxTimestamp": "1699999999.00000000"
 }
@@ -200,8 +204,9 @@ flow scripts execute cadence/scripts/GetCronScheduleStatus.cdc \
 
 **Key observations:**
 
-- `nextScheduledKeeperID` shows the keeper transaction ID
-- `keeperTxStatus` = `1` (Scheduled)
+- `nextScheduledExecutorID` shows the executor transaction ID (runs user code)
+- `nextScheduledKeeperID` shows the keeper transaction ID (schedules next cycle)
+- Both have `status` = `1` (Scheduled)
 
 ### Step 9: Wait for First Execution
 
@@ -241,7 +246,10 @@ flow scripts execute cadence/scripts/GetCronScheduleStatus.cdc \
 ```json
 {
   "cronExpression": "* * * * *",
+  "nextScheduledExecutorID": 2,
   "nextScheduledKeeperID": 3,
+  "executorTxStatus": 1,
+  "executorTxTimestamp": "...",
   "keeperTxStatus": 1,
   "keeperTxTimestamp": "..."
 }
@@ -249,7 +257,8 @@ flow scripts execute cadence/scripts/GetCronScheduleStatus.cdc \
 
 **Key observations:**
 
-- `nextScheduledKeeperID` shows the next keeper transaction
+- `nextScheduledExecutorID` shows the next executor transaction (runs user code)
+- `nextScheduledKeeperID` shows the next keeper transaction (schedules next cycle)
 - Status `1` means Scheduled
 - The keeper already scheduled the next executor + keeper pair
 
@@ -300,7 +309,7 @@ flow scripts execute cadence/scripts/GetCronInfo.cdc \
 
 ### Step 12: Stop the Cron Job
 
-When you're satisfied with the testing, cancel the scheduled keeper:
+When you're satisfied with the testing, cancel the scheduled transactions:
 
 ```bash
 flow transactions send cadence/transactions/CancelCronSchedule.cdc \
@@ -316,14 +325,17 @@ Transaction ID: <some-hash>
 Status: ✅ SEALED
 
 Events:
-  - A.<address>.FlowTransactionScheduler.Canceled
+  - A.<address>.FlowTransactionScheduler.Canceled (x2)
+
+Logs:
+  - "Cancelled 2 transaction(s)"
 ```
 
-**Note:** This cancels the keeper. Any pending executor will still run once.
+This cancels both the executor and keeper transactions, completely stopping the cron job.
 
 ### Step 13: Verify Cancellation
 
-Confirm the keeper was cancelled:
+Confirm the transactions were cancelled:
 
 ```bash
 flow scripts execute cadence/scripts/GetCronScheduleStatus.cdc \
@@ -337,13 +349,16 @@ flow scripts execute cadence/scripts/GetCronScheduleStatus.cdc \
 ```json
 {
   "cronExpression": "* * * * *",
+  "nextScheduledExecutorID": null,
   "nextScheduledKeeperID": null,
+  "executorTxStatus": null,
+  "executorTxTimestamp": null,
   "keeperTxStatus": null,
   "keeperTxTimestamp": null
 }
 ```
 
-The `nextScheduledKeeperID` is null, indicating no active keeper scheduled.
+Both `nextScheduledExecutorID` and `nextScheduledKeeperID` are null, indicating the cron job is fully stopped.
 
 **Check final counter value:**
 

@@ -139,6 +139,7 @@ flow scripts execute cadence/scripts/GetCronInfo.cdc \
   "cronExpression": "* * * * *",
   "cronSpec": { ... },
   "nextScheduledKeeperID": null,
+  "nextScheduledExecutorID": null,
   "wrappedHandlerType": "A.f8d6e0586b0a20c7.CounterTransactionHandler.Handler",
   "wrappedHandlerUUID": 123
 }
@@ -229,7 +230,10 @@ flow scripts execute cadence/scripts/GetCronScheduleStatus.cdc \
 ```json
 {
   "cronExpression": "* * * * *",
+  "nextScheduledExecutorID": 2,
   "nextScheduledKeeperID": 3,
+  "executorTxStatus": 1,
+  "executorTxTimestamp": "...",
   "keeperTxStatus": 1,
   "keeperTxTimestamp": "..."
 }
@@ -237,7 +241,8 @@ flow scripts execute cadence/scripts/GetCronScheduleStatus.cdc \
 
 **Key observations:**
 
-- `nextScheduledKeeperID` shows the next keeper transaction
+- `nextScheduledExecutorID` shows the next executor transaction (runs user code)
+- `nextScheduledKeeperID` shows the next keeper transaction (schedules next cycle)
 - Status `1` means Scheduled
 - The keeper already scheduled the next executor + keeper pair
 
@@ -326,7 +331,7 @@ Status codes:
 
 ### Step 14: Stop the Cron Job
 
-When you're satisfied with testing (after 3-5 minutes), cancel the scheduled keeper:
+When you're satisfied with testing (after 3-5 minutes), cancel the scheduled transactions:
 
 ```bash
 flow transactions send cadence/transactions/CancelCronSchedule.cdc \
@@ -342,14 +347,17 @@ Transaction ID: <some-hash>
 Status: ✅ SEALED
 
 Events:
-  - A.f8d6e0586b0a20c7.FlowTransactionScheduler.Canceled
+  - A.f8d6e0586b0a20c7.FlowTransactionScheduler.Canceled (x2)
+
+Logs:
+  - "Cancelled 2 transaction(s)"
 ```
 
-**Note:** This cancels the keeper. Any pending executor will still run once.
+This cancels both the executor and keeper transactions, completely stopping the cron job.
 
 ### Step 15: Verify Cancellation
 
-Confirm the keeper was cancelled:
+Confirm the transactions were cancelled:
 
 ```bash
 flow scripts execute cadence/scripts/GetCronScheduleStatus.cdc \
@@ -363,13 +371,16 @@ flow scripts execute cadence/scripts/GetCronScheduleStatus.cdc \
 ```json
 {
   "cronExpression": "* * * * *",
+  "nextScheduledExecutorID": null,
   "nextScheduledKeeperID": null,
+  "executorTxStatus": null,
+  "executorTxTimestamp": null,
   "keeperTxStatus": null,
   "keeperTxTimestamp": null
 }
 ```
 
-The `nextScheduledKeeperID` is null, indicating no active keeper scheduled.
+Both `nextScheduledExecutorID` and `nextScheduledKeeperID` are null, indicating the cron job is fully stopped.
 
 **Check final counter value:**
 
