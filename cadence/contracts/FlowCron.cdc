@@ -44,7 +44,7 @@ access(all) contract FlowCron {
     /// Emitted when keeper successfully schedules next cycle
     access(all) event CronKeeperExecuted(
         txID: UInt64,
-        nextExecutorTxID: UInt64?,
+        nextExecutorTxID: UInt64,
         nextKeeperTxID: UInt64,
         nextExecutorTime: UInt64,
         nextKeeperTime: UInt64,
@@ -61,17 +61,6 @@ access(all) contract FlowCron {
         handlerUUID: UInt64,
         wrappedHandlerType: String,
         wrappedHandlerUUID: UInt64
-    )
-
-    /// Emitted when executor scheduling fails (keeper continues without executor)
-    access(all) event CronExecutorFailed(
-        txID: UInt64,
-        nextKeeperTxID: UInt64,
-        nextKeeperTime: UInt64,
-        cronExpression: String,
-        handlerUUID: UInt64,
-        wrappedHandlerType: String?,
-        wrappedHandlerUUID: UInt64?
     )
 
     /// Emitted when scheduling is rejected (due to duplicate/unauthorized scheduling)
@@ -99,11 +88,13 @@ access(all) contract FlowCron {
     access(all) event CronEstimationFailed(
         txID: UInt64,
         executionMode: UInt8,
+        priority: UInt8,
+        executionEffort: UInt64,
+        error: String?,
         cronExpression: String,
         handlerUUID: UInt64,
         wrappedHandlerType: String?,
         wrappedHandlerUUID: UInt64?,
-        error: String?
     )
 
     /// Execution mode selector for dual-mode handler
@@ -182,15 +173,13 @@ access(all) contract FlowCron {
         /// Only calculates times and schedules transactions
         /// Schedules executor at cron tick and keeper with 1s offset (separate slots)
         access(self) fun executeKeeperMode(txID: UInt64, context: CronContext) {
-            let currentTime = UInt64(getCurrentBlock().timestamp)
-
             // Calculate next cron tick (for BOTH executor and keeper)
+            let currentTime = UInt64(getCurrentBlock().timestamp)
             let nextTick = FlowCronUtils.nextTick(spec: self.cronSpec, afterUnix: currentTime) ?? panic("Cannot calculate next cron tick")
 
             // Schedule executor FIRST at exact cron tick (user's work runs exactly on time)
             // Returns nil if scheduling fails so we can tolerate executor failures
-            // TODO: Should we do something with the nil case? try rescheduling?
-            let executorTxID = self.scheduleCronTransaction(
+            var executorTxID = self.scheduleCronTransaction(
                 txID: txID,
                 mode: ExecutionMode.Executor,
                 timestamp: nextTick,
@@ -198,6 +187,17 @@ access(all) contract FlowCron {
                 executionEffort: context.executionEffort,
                 context: context
             )
+            // Priority fallback: if High priority failed, retry with Medium that is guaranteed to find a slot
+            if executorTxID == nil && context.priority == FlowTransactionScheduler.Priority.High {
+                executorTxID = self.scheduleCronTransaction(
+                    txID: txID,
+                    mode: ExecutionMode.Executor,
+                    timestamp: nextTick,
+                    priority: FlowTransactionScheduler.Priority.Medium,
+                    executionEffort: context.executionEffort,
+                    context: context
+                )
+            }
 
             // Schedule keeper SECOND with 1 second offset to prevent race condition
             // Offset ensures different timestamp slots -> different blocks -> no collision
@@ -214,23 +214,10 @@ access(all) contract FlowCron {
 
             // Emit appropriate event based on executor scheduling result
             let wrappedHandler = self.wrappedHandlerCap.borrow()
-            if executorTxID == nil {
-                // Executor scheduling failed, emit failure event to notify user
-                emit CronExecutorFailed(
-                    txID: txID,
-                    nextKeeperTxID: keeperTxID,
-                    nextKeeperTime: nextTick + FlowCron.KEEPER_OFFSET_SECONDS,
-                    cronExpression: self.cronExpression,
-                    handlerUUID: self.uuid,
-                    wrappedHandlerType: wrappedHandler?.getType()?.identifier,
-                    wrappedHandlerUUID: wrappedHandler?.uuid
-                )
-            }
-
-            // Always emit keeper executed event (keeper succeeded even if executor failed)
+            // Always emit keeper executed event
             emit CronKeeperExecuted(
                 txID: txID,
-                nextExecutorTxID: executorTxID,
+                nextExecutorTxID: executorTxID!,
                 nextKeeperTxID: keeperTxID,
                 nextExecutorTime: nextTick,
                 nextKeeperTime: nextTick + FlowCron.KEEPER_OFFSET_SECONDS,
@@ -320,20 +307,21 @@ access(all) contract FlowCron {
                         wrappedHandlerUUID: wrappedHandler?.uuid
                     )
                 }
-            } else {
-                // Estimation failed, emits event
-                let wrappedHandler = self.wrappedHandlerCap.borrow()
-                emit CronEstimationFailed(
-                    txID: txID,
-                    executionMode: mode.rawValue,
-                    cronExpression: self.cronExpression,
-                    handlerUUID: self.uuid,
-                    wrappedHandlerType: wrappedHandler?.getType()?.identifier,
-                    wrappedHandlerUUID: wrappedHandler?.uuid,
-                    error: estimate.error
-                )
             }
-            // If we arrive here, scheduling failed so return nil
+
+            // If we arrive here, estimation failed so emit event and return nil
+            let wrappedHandler = self.wrappedHandlerCap.borrow()
+            emit CronEstimationFailed(
+                txID: txID,
+                executionMode: mode.rawValue,
+                priority: priority.rawValue,
+                executionEffort: executionEffort,
+                error: estimate.error,
+                cronExpression: self.cronExpression,
+                handlerUUID: self.uuid,
+                wrappedHandlerType: wrappedHandler?.getType()?.identifier,
+                wrappedHandlerUUID: wrappedHandler?.uuid,
+            )
             return nil
         }
 
