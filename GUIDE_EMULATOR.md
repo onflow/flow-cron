@@ -5,14 +5,16 @@ This guide provides step-by-step commands to test the FlowCron implementation on
 ## Test Objective
 
 Schedule a recurring transaction that executes **every minute** and increments a counter by 1. We'll verify:
+
 - Counter increments correctly (by 1 each minute)
-- Double-buffer pattern maintains 2 scheduled transactions (next + future)
-- Automatic rescheduling works after each execution
-- All transactions execute sequentially without rejections
+- Keeper/Executor architecture works correctly
+- Automatic rescheduling works after each keeper execution
+- All transactions execute without rejections
 
 ## Prerequisites
 
 Before starting, ensure you have:
+
 - Flow CLI installed (`flow version`)
 - Flow emulator ready to start
 
@@ -39,7 +41,8 @@ flow emulator start --block-time 1s
 **Keep this terminal open** - it will show logs of all transactions executing.
 
 **Expected output:**
-```
+
+```text
 INFO[0000] ⚙️   Using service account 0xf8d6e0586b0a20c7
 INFO[0000] 📜  Flow contracts FlowServiceAccount, FlowToken, FungibleToken, ...
 INFO[0000] 🌱  Starting emulator server on port 3569
@@ -54,7 +57,8 @@ flow project deploy --network=emulator
 ```
 
 **Expected output:**
-```
+
+```text
 Deploying 4 contracts for accounts: emulator-account
 
 FlowCronUtils -> 0xf8d6e0586b0a20c7
@@ -76,7 +80,8 @@ flow transactions send cadence/tests/mocks/transactions/InitCounterTransactionHa
 ```
 
 **Expected output:**
-```
+
+```text
 Transaction ID: <some-hash>
 Status: ✅ SEALED
 ```
@@ -91,7 +96,8 @@ flow scripts execute cadence/tests/mocks/scripts/GetCounter.cdc \
 ```
 
 **Expected output:**
-```
+
+```text
 Result: 0
 ```
 
@@ -109,7 +115,8 @@ flow transactions send cadence/transactions/CreateCronHandler.cdc \
 ```
 
 **Expected output:**
-```
+
+```text
 Transaction ID: <some-hash>
 Status: ✅ SEALED
 ```
@@ -126,11 +133,12 @@ flow scripts execute cadence/scripts/GetCronInfo.cdc \
 ```
 
 **Expected output (example):**
+
 ```json
 {
   "cronExpression": "* * * * *",
-  "nextExecution": 1699999999,
-  "futureExecution": 1700000059,
+  "cronSpec": { ... },
+  "nextScheduledKeeperID": null,
   "wrappedHandlerType": "A.f8d6e0586b0a20c7.CounterTransactionHandler.Handler",
   "wrappedHandlerUUID": 123
 }
@@ -138,7 +146,7 @@ flow scripts execute cadence/scripts/GetCronInfo.cdc \
 
 ### Step 7: Schedule the Initial Cron Execution
 
-Start the cron job by scheduling the first execution:
+Start the cron job by scheduling the first execution (both executor and keeper):
 
 ```bash
 flow transactions send cadence/transactions/ScheduleCronHandler.cdc \
@@ -151,25 +159,30 @@ flow transactions send cadence/transactions/ScheduleCronHandler.cdc \
 ```
 
 **Arguments explained:**
+
 - `/storage/CounterCronHandler` - Where the CronHandler is stored
 - `nil` - No wrapped data needed for Counter
 - `2` - Priority: Low (0=High, 1=Medium, 2=Low)
 - `500` - Execution effort (confirmed working value)
 
 **Expected output:**
-```
+
+```text
 Transaction ID: <some-hash>
 Status: ✅ SEALED
 
 Events:
-  - A.f8d6e0586b0a20c7.FlowTransactionScheduler.Scheduled
+  - A.f8d6e0586b0a20c7.FlowTransactionScheduler.Scheduled (x2)
 ```
+
+Note: Two transactions are scheduled (executor + keeper for first tick).
 
 ### Step 8: Check Emulator Logs
 
-In the emulator terminal, you should see logs showing the transaction was scheduled:
+In the emulator terminal, you should see logs showing transactions were scheduled:
 
-```
+```text
+INFO[...] 📝  Transaction scheduled ID=0
 INFO[...] 📝  Transaction scheduled ID=1
 ```
 
@@ -177,10 +190,13 @@ INFO[...] 📝  Transaction scheduled ID=1
 
 Wait approximately **60-90 seconds** for the first execution. Watch the emulator logs for:
 
-```
+```text
+INFO[...] 🔷  Executing scheduled transaction ID=0
+LOG [timestamp] "Transaction executed (id: 0) newCount: 1"
 INFO[...] 🔷  Executing scheduled transaction ID=1
-LOG [2025-01-03 14:00:00.000 UTC] "Transaction executed (id: 1) newCount: 1"
 ```
+
+The executor (ID=0) runs your code, the keeper (ID=1) schedules the next cycle.
 
 Then check the counter:
 
@@ -190,15 +206,16 @@ flow scripts execute cadence/tests/mocks/scripts/GetCounter.cdc \
 ```
 
 **Expected output:**
-```
+
+```text
 Result: 1
 ```
 
 ✅ **The counter incremented to 1!**
 
-### Step 10: Verify Double-Buffer Pattern
+### Step 10: Verify Keeper/Executor Pattern
 
-After the first execution, check that both next and future are scheduled:
+After the first execution, check that the keeper scheduled the next cycle:
 
 ```bash
 flow scripts execute cadence/scripts/GetCronScheduleStatus.cdc \
@@ -208,34 +225,35 @@ flow scripts execute cadence/scripts/GetCronScheduleStatus.cdc \
 ```
 
 **Expected output:**
+
 ```json
 {
   "cronExpression": "* * * * *",
-  "nextTransactionID": 2,
-  "futureTransactionID": 3,
-  "nextTxStatus": 1,
-  "nextTxTimestamp": "...",
-  "futureTxStatus": 1,
-  "futureTxTimestamp": "..."
+  "nextScheduledKeeperID": 3,
+  "keeperTxStatus": 1,
+  "keeperTxTimestamp": "..."
 }
 ```
 
 **Key observations:**
-- `nextTransactionID` and `futureTransactionID` are both present
-- Both have status `1` (Scheduled)
-- This confirms the double-buffer pattern is active!
+
+- `nextScheduledKeeperID` shows the next keeper transaction
+- Status `1` means Scheduled
+- The keeper already scheduled the next executor + keeper pair
 
 ### Step 11: Monitor Continuous Execution
 
 Watch the emulator logs and check the counter every 60-90 seconds:
 
 **Check counter:**
+
 ```bash
 flow scripts execute cadence/tests/mocks/scripts/GetCounter.cdc \
   --network=emulator
 ```
 
 **Check schedule:**
+
 ```bash
 flow scripts execute cadence/scripts/GetCronScheduleStatus.cdc \
   0xf8d6e0586b0a20c7 \
@@ -245,38 +263,38 @@ flow scripts execute cadence/scripts/GetCronScheduleStatus.cdc \
 
 **Expected behavior over time:**
 
-| Time | Counter | Next TX ID | Future TX ID | Emulator Log |
-|------|---------|------------|--------------|--------------|
-| Initial | 0 | 1 | null | Scheduled ID=1 |
-| After 1 min | 1 | 2 | 3 | Executed ID=1, Scheduled ID=2,3 |
-| After 2 min | 2 | 3 | 4 | Executed ID=2, Scheduled ID=4 |
-| After 3 min | 3 | 4 | 5 | Executed ID=3, Scheduled ID=5 |
-| After 4 min | 4 | 5 | 6 | Executed ID=4, Scheduled ID=6 |
+| Time | Counter | Events in Log |
+|------|---------|---------------|
+| Initial | 0 | Scheduled executor + keeper |
+| After 1 min | 1 | `CronExecutorExecuted`, `CronKeeperExecuted` |
+| After 2 min | 2 | `CronExecutorExecuted`, `CronKeeperExecuted` |
+| After 3 min | 3 | `CronExecutorExecuted`, `CronKeeperExecuted` |
 
 **What to verify:**
+
 1. ✅ Counter increments by exactly 1 each minute
-2. ✅ Both next and future transactions are always scheduled (after first execution)
-3. ✅ Transaction IDs increment sequentially (1, 2, 3, 4...)
+2. ✅ `CronKeeperExecuted` events show `nextExecutorTxID` and `nextKeeperTxID`
+3. ✅ `CronExecutorExecuted` events confirm user code ran
 4. ✅ No `CronScheduleRejected` events in the logs
-5. ✅ All executions show in emulator logs with "newCount" incrementing
 
 ### Step 12: Verify No Rejections
 
 After 3-4 minutes of execution, check for any rejection events. In the emulator logs, look for:
 
 **Good (no rejections):**
-```
-LOG [timestamp] "Transaction executed (id: 1) newCount: 1"
-LOG [timestamp] "Transaction executed (id: 2) newCount: 2"
-LOG [timestamp] "Transaction executed (id: 3) newCount: 3"
+
+```text
+EVENT CronExecutorExecuted txID=2
+EVENT CronKeeperExecuted txID=3 nextExecutorTxID=4 nextKeeperTxID=5
 ```
 
 **Bad (rejections present):**
-```
-EVENT A.f8d6e0586b0a20c7.FlowCron.CronScheduleRejected
+
+```text
+EVENT CronScheduleRejected txID=...
 ```
 
-If you see rejections, this indicates the race condition bug has returned. All executions should succeed.
+If you see rejections, this indicates a duplicate keeper tried to execute.
 
 ### Step 13: Check Transaction Details
 
@@ -291,6 +309,7 @@ flow scripts execute cadence/scripts/GetTransactionData.cdc \
 Replace `2` with any transaction ID from the schedule status.
 
 **Expected output:**
+
 ```json
 {
   "id": 2,
@@ -300,13 +319,14 @@ Replace `2` with any transaction ID from the schedule status.
 ```
 
 Status codes:
+
 - `1` = Scheduled
 - `2` = Executed
 - `3` = Cancelled
 
 ### Step 14: Stop the Cron Job
 
-When you're satisfied with testing (after 3-5 minutes), cancel all scheduled transactions:
+When you're satisfied with testing (after 3-5 minutes), cancel the scheduled keeper:
 
 ```bash
 flow transactions send cadence/transactions/CancelCronSchedule.cdc \
@@ -316,17 +336,20 @@ flow transactions send cadence/transactions/CancelCronSchedule.cdc \
 ```
 
 **Expected output:**
-```
+
+```text
 Transaction ID: <some-hash>
 Status: ✅ SEALED
 
 Events:
-  - A.f8d6e0586b0a20c7.FlowTransactionScheduler.Canceled (x2)
+  - A.f8d6e0586b0a20c7.FlowTransactionScheduler.Canceled
 ```
+
+**Note:** This cancels the keeper. Any pending executor will still run once.
 
 ### Step 15: Verify Cancellation
 
-Confirm all scheduled transactions were cancelled:
+Confirm the keeper was cancelled:
 
 ```bash
 flow scripts execute cadence/scripts/GetCronScheduleStatus.cdc \
@@ -336,15 +359,20 @@ flow scripts execute cadence/scripts/GetCronScheduleStatus.cdc \
 ```
 
 **Expected output:**
+
 ```json
 {
-  "cronExpression": "* * * * *"
+  "cronExpression": "* * * * *",
+  "nextScheduledKeeperID": null,
+  "keeperTxStatus": null,
+  "keeperTxTimestamp": null
 }
 ```
 
-The transaction ID fields should be missing or null, indicating no active scheduled transactions.
+The `nextScheduledKeeperID` is null, indicating no active keeper scheduled.
 
 **Check final counter value:**
+
 ```bash
 flow scripts execute cadence/tests/mocks/scripts/GetCounter.cdc \
   --network=emulator
@@ -363,7 +391,8 @@ flow scripts execute cadence/scripts/GetTransactionData.cdc \
 ```
 
 **Expected output:**
-```
+
+```text
 Result: nil
 ```
 

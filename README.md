@@ -10,8 +10,9 @@ FlowCron leverages Flow's native transaction scheduling capabilities (FLIP-330) 
 
 - **Standard Cron Syntax**: Uses familiar 5-field cron expressions (minute, hour, day-of-month, month, day-of-week)
 - **Self-Perpetuating**: Jobs automatically reschedule themselves after each execution
-- **Double-Buffer Pattern**: Maintains two scheduled transactions (next + future) for continuous operation
-- **Fault Tolerant**: Wrapped handler failures don't stop the cron schedule
+- **Keeper/Executor Architecture**: Separates scheduling logic from user code for fault isolation
+- **Priority Fallback**: Automatic High→Medium priority fallback when slots are full
+- **Fault Tolerant**: Executor failures don't stop the keeper from scheduling next cycle
 - **Flexible Priority**: Supports High, Medium, and Low priority executions
 - **View Resolver Integration**: Full support for querying job states and metadata
 - **Distributed Design**: Each user controls their own CronHandler resources
@@ -107,9 +108,7 @@ access(all) resource CronHandler: FlowTransactionScheduler.TransactionHandler, V
     access(self) let wrappedHandlerCap: Capability<auth(FlowTransactionScheduler.Execute) &{FlowTransactionScheduler.TransactionHandler}>
 
     // Scheduling state (internal)
-    access(self) var nextScheduledTransactionID: UInt64?
-    access(self) var futureScheduledTransactionID: UInt64?
-    access(self) var hasActiveSchedule: Bool
+    access(self) var nextScheduledKeeperID: UInt64?
 
     // TransactionHandler interface
     access(FlowTransactionScheduler.Execute) fun executeTransaction(id: UInt64, data: AnyStruct?)
@@ -117,12 +116,22 @@ access(all) resource CronHandler: FlowTransactionScheduler.TransactionHandler, V
     // Public getter methods (all view - read-only)
     access(all) view fun getCronExpression(): String
     access(all) view fun getCronSpec(): FlowCronUtils.CronSpec
-    access(all) view fun getNextScheduledTransactionID(): UInt64?
-    access(all) view fun getFutureScheduledTransactionID(): UInt64?
+    access(all) view fun getNextScheduledKeeperID(): UInt64?
 
     // ViewResolver methods
-    access(all) view fun getViews(): [Type]  // view: required by ViewResolver interface
-    access(all) fun resolveView(_ view: Type): AnyStruct?  // Not view: may delegate to wrapped handler
+    access(all) view fun getViews(): [Type]
+    access(all) fun resolveView(_ view: Type): AnyStruct?
+}
+```
+
+#### ExecutionMode Enum
+
+Determines whether a scheduled transaction runs as keeper or executor:
+
+```cadence
+access(all) enum ExecutionMode: UInt8 {
+    access(all) case Keeper   // Pure scheduling logic
+    access(all) case Executor // User code execution
 }
 ```
 
@@ -137,6 +146,7 @@ access(all) struct CronContext {
     access(all) let priority: FlowTransactionScheduler.Priority
     access(all) let executionEffort: UInt64
     access(all) let wrappedData: AnyStruct?
+    access(all) let executionMode: ExecutionMode
 }
 ```
 
@@ -148,8 +158,7 @@ Metadata view for querying cron handler information:
 access(all) struct CronInfo {
     access(all) let cronExpression: String
     access(all) let cronSpec: FlowCronUtils.CronSpec
-    access(all) let nextExecution: UInt64?
-    access(all) let futureExecution: UInt64?
+    access(all) let nextScheduledKeeperID: UInt64?
     access(all) let wrappedHandlerType: String?
     access(all) let wrappedHandlerUUID: UInt64?
 }
@@ -157,54 +166,59 @@ access(all) struct CronInfo {
 
 ### Design Principles
 
-#### 1. Double-Buffer Pattern
+#### 1. Keeper/Executor Architecture
 
-FlowCron uses a **double-buffer scheduling pattern** to maintain continuous execution:
+FlowCron uses a **dual-mode architecture** that separates scheduling from execution:
 
 ```
 Time ────────────────────────────────────>
-         │
-         ├── Next (T2)     ← Executes soon
-         │
-         └── Future (T3)   ← Backup/continuity
+     T1                    T2                    T3
+     │                     │                     │
+     ├── Executor ────────►├── Executor ────────►├── Executor
+     │   (user code)       │   (user code)       │   (user code)
+     │                     │                     │
+     └── Keeper ──────────►└── Keeper ──────────►└── Keeper
+         (schedules T2)        (schedules T3)        (schedules T4)
+         (+1s offset)          (+1s offset)          (+1s offset)
 ```
 
-**How it works:**
+**Two transaction types per cycle:**
 
-1. **Initial Schedule**: You schedule a single transaction (T1) at **any time you choose**
-   - Can be the next cron time, or any custom timestamp
-   - Gives you flexibility to start cron jobs at specific moments (e.g., "start tomorrow at 9 AM")
-2. **T1 Executes**:
-   - **First**: Schedules BOTH Next (T2) and Future (T3) based on cron spec **from current time**
-   - **Then**: Runs your wrapped handler logic
-   - Double-buffer is now active BEFORE handler executes (safety guarantee)
-3. **T2 Executes**:
-   - **First**: Shifts Future (T3) → Next, schedules new Future (T4) based on cron spec
-   - **Then**: Runs your wrapped handler logic
-   - Maintains the double-buffer even if handler fails
-4. **Continues indefinitely** - each execution ensures two transactions are always scheduled, following the cron spec
+1. **Executor**: Runs at exact cron tick, executes your wrapped handler
+2. **Keeper**: Runs 1 second later, schedules next cycle (both executor + keeper)
 
-**Benefits:**
+**Why this design?**
 
-- **Flexible Start**: Choose exactly when your cron job begins (next cron time, specific date, or custom timestamp)
-- **Reliability**: If one transaction fails to execute, the other ensures continuity
-- **No Gaps**: System always has a scheduled execution after the first run
-- **Smooth Operation**: Seamless transition between executions
-- **Automatic Recovery**: Even if scheduling temporarily fails (low funds), the existing buffered transaction keeps it running
+- **Fault Isolation**: If executor panics (user code error), keeper still runs and schedules next cycle
+- **No Silent Death**: Keeper uses force-unwrap - if scheduling fails, it panics loudly (better than silent stop)
+- **Priority Fallback**: Executor tries High priority first, falls back to Medium if slot is full
 
-#### 2. Atomic Rescheduling
+#### 2. Bootstrap Process
 
-- Rescheduling happens **before** wrapped handler execution
-- If wrapped handler fails, cron continues on schedule
-- State sync ensures accuracy even after cancellations
+**Initial scheduling** (user triggers once):
 
-#### 3. State Management with `syncSchedule()`
+1. User schedules BOTH executor AND keeper for the first cron tick
+2. Executor runs user code at T1
+3. Keeper schedules next executor (T2) + next keeper (T2+1s)
+4. Cycle continues forever
 
-The `syncSchedule()` function maintains consistency:
+```
+User Bootstrap          T1                      T2
+     │                  │                       │
+     ├─ Schedule ──────►├── Executor ──────────►├── Executor
+     │  Executor(T1)    │   runs user code      │   runs user code
+     │                  │                       │
+     └─ Schedule ──────►└── Keeper ────────────►└── Keeper
+        Keeper(T1)          schedules T2            schedules T3
+```
 
-- Clears stale transaction IDs (executed/cancelled/missing)
-- Updates `hasActiveSchedule` flag to control external scheduling
-- Ensures internal state matches scheduler reality
+#### 3. Protection Against Duplicate Scheduling
+
+FlowCron tracks `nextScheduledKeeperID` to prevent duplicates:
+
+- If a keeper with different ID tries to execute, it's rejected
+- Emits `CronScheduleRejected` event for monitoring
+- Only the scheduled keeper can continue the chain
 
 #### 4. Distributed Ownership
 
@@ -229,55 +243,20 @@ Each user owns their `CronHandler` resources:
 - No central bottleneck or single point of failure
 - Users pay their own scheduling fees
 - Scales horizontally across all accounts
-- Permissionless as anyone can create cron jobs
+- Permissionless - anyone can create cron jobs
 
-### How It Works: Execution Flow
+### Events
 
-#### Initial Scheduling
+FlowCron emits detailed events for monitoring:
 
-**Step 1: You start the cron job**
-
-- Schedule a single execution at any time you choose
-- Can be the next cron time, tomorrow at 9 AM, or any future moment
-- This gives you full control over when the cron job begins
-
-**Step 2: First execution (T1)**
-
-1. ⚠️ **Schedules future executions FIRST**
-   - Calculates next two times from cron expression: T2 and T3
-   - Schedules both transactions
-   - Double-buffer is now active
-2. **Runs your task logic**
-   - Executes your wrapped handler
-   - Even if this fails, cron continues (already scheduled!)
-
-**Result**: Two future executions are queued, cron job is self-sustaining
-
-#### Recurring Execution
-
-**Step 3: Subsequent executions (T2, T3, T4...)**
-
-1. ⚠️ **Maintains schedule FIRST**
-   - Checks which transactions are still pending
-   - Shifts the future execution to become the next one
-   - Schedules a new future execution based on cron expression
-   - Double-buffer is always maintained
-2. **Runs your task logic**
-   - Executes your wrapped handler
-   - Even if this fails, cron continues
-
-**Result**: Job runs indefinitely, always keeping two executions scheduled ahead
-
-#### Protection Against Double-Scheduling
-
-**If someone tries to schedule again while active:**
-
-- System detects the cron job is already running
-- Rejects the new scheduling attempt
-- Prevents conflicting contexts or duplicate executions
-- Emits a rejection event for monitoring
-
-**Result**: Data consistency is protected - one cron schedule per handler
+| Event | When Emitted |
+|-------|--------------|
+| `CronKeeperExecuted` | Keeper successfully scheduled next cycle |
+| `CronExecutorExecuted` | Executor successfully ran user code |
+| `CronExecutorFallback` | Executor fell back from High to Medium priority |
+| `CronScheduleRejected` | Duplicate/unauthorized keeper was blocked |
+| `CronScheduleFailed` | Scheduling failed (insufficient funds) |
+| `CronEstimationFailed` | Fee estimation failed |
 
 ## Cron Expression Engine
 
@@ -344,6 +323,7 @@ dowMask:   0x3E                (bits 1-5 set = Mon-Fri)
 ```
 
 **Benefits:**
+
 - **Space**: ~15 bytes vs hundreds for arrays
 - **Speed**: O(1) bit check vs O(n) array scan
 - **Gas**: Bitwise operations are cheapest on EVM/Cadence
