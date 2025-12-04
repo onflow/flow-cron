@@ -159,12 +159,13 @@ access(all) contract FlowCron {
                     if let txData = FlowTransactionScheduler.getTransactionData(id: storedID) {
                         // Data exists so transaction is scheduled, check this is the expected keeper
                         if id != storedID {
+                            let wrappedHandler = self.wrappedHandlerCap.borrow()
                             emit CronScheduleRejected(
                                 txID: id,
                                 cronExpression: self.cronExpression,
                                 handlerUUID: self.uuid,
-                                wrappedHandlerType: self.wrappedHandlerCap.borrow()?.getType()?.identifier,
-                                wrappedHandlerUUID: self.wrappedHandlerCap.borrow()?.uuid
+                                wrappedHandlerType: wrappedHandler?.getType()?.identifier,
+                                wrappedHandlerUUID: wrappedHandler?.uuid
                             )
                             return
                         }
@@ -336,7 +337,7 @@ access(all) contract FlowCron {
                 cronExpression: self.cronExpression,
                 handlerUUID: self.uuid,
                 wrappedHandlerType: wrappedHandler?.getType()?.identifier,
-                wrappedHandlerUUID: wrappedHandler?.uuid,
+                wrappedHandlerUUID: wrappedHandler?.uuid
             )
             return nil
         }
