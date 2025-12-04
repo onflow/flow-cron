@@ -14,7 +14,8 @@ transaction(
     executionEffort: UInt64
 ) {
     let manager: auth(FlowTransactionSchedulerUtils.Owner) &{FlowTransactionSchedulerUtils.Manager}
-    let nextExecutionTime: UInt64
+    let executorTime: UInt64
+    let keeperTime: UInt64
     let cronHandlerCap: Capability<auth(FlowTransactionScheduler.Execute) &{FlowTransactionScheduler.TransactionHandler}>
     let feeProviderCap: Capability<auth(FungibleToken.Withdraw) &FlowToken.Vault>
     let managerCap: Capability<auth(FlowTransactionSchedulerUtils.Owner) &{FlowTransactionSchedulerUtils.Manager}>
@@ -41,10 +42,11 @@ transaction(
         // Get a copy of the cron spec via getter function
         let cronSpec = cronHandler.getCronSpec()
 
-        // Calculate next execution time
+        // Calculate execution times: executor at cron tick, keeper 1 second later
         let currentTime = UInt64(getCurrentBlock().timestamp)
-        self.nextExecutionTime = FlowCronUtils.nextTick(spec: cronSpec, afterUnix: currentTime)
+        self.executorTime = FlowCronUtils.nextTick(spec: cronSpec, afterUnix: currentTime)
             ?? panic("Cannot find next execution time for cron expression")
+        self.keeperTime = self.executorTime + FlowCron.KEEPER_OFFSET_SECONDS
 
         // Create capabilities for CronContext
         self.cronHandlerCap = signer.capabilities.storage.issue<auth(FlowTransactionScheduler.Execute) &{FlowTransactionScheduler.TransactionHandler}>(
@@ -82,17 +84,17 @@ transaction(
         // Estimate fees for EXECUTOR
         let executorEstimate = FlowTransactionScheduler.estimate(
             data: self.executorContext,
-            timestamp: UFix64(self.nextExecutionTime),
+            timestamp: UFix64(self.executorTime),
             priority: FlowTransactionScheduler.Priority(rawValue: priority)!,
             executionEffort: executionEffort
         )
 
         let executorFee = executorEstimate.flowFee ?? panic("Cannot estimate executor fee")
 
-        // Estimate fees for KEEPER
+        // Estimate fees for KEEPER (scheduled 1 second after executor)
         let keeperEstimate = FlowTransactionScheduler.estimate(
             data: self.keeperContext,
-            timestamp: UFix64(self.nextExecutionTime),
+            timestamp: UFix64(self.keeperTime),
             priority: FlowCron.KEEPER_PRIORITY,
             executionEffort: FlowCron.KEEPER_EXECUTION_EFFORT
         )
@@ -116,29 +118,24 @@ transaction(
     }
 
     execute {
-        // Schedule EXECUTOR transaction (user code runs at first tick)
+        // Schedule EXECUTOR transaction (user code runs at cron tick)
         let executorTxID = self.manager.schedule(
             handlerCap: self.cronHandlerCap,
             data: self.executorContext,
-            timestamp: UFix64(self.nextExecutionTime),
+            timestamp: UFix64(self.executorTime),
             priority: FlowTransactionScheduler.Priority(rawValue: priority)!,
             executionEffort: executionEffort,
             fees: <-self.executorFees
         )
 
-        // Schedule KEEPER transaction (schedules next cycle at first tick)
+        // Schedule KEEPER transaction (1 second after executor to prevent race conditions)
         let keeperTxID = self.manager.schedule(
             handlerCap: self.cronHandlerCap,
             data: self.keeperContext,
-            timestamp: UFix64(self.nextExecutionTime),
+            timestamp: UFix64(self.keeperTime),
             priority: FlowCron.KEEPER_PRIORITY,
             executionEffort: FlowCron.KEEPER_EXECUTION_EFFORT,
             fees: <-self.keeperFees
         )
-
-        log("Cron handler initialized successfully")
-        log("First execution at: ".concat(self.nextExecutionTime.toString()))
-        log("Executor TX ID: ".concat(executorTxID.toString()))
-        log("Keeper TX ID: ".concat(keeperTxID.toString()))
     }
 }
