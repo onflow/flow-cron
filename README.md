@@ -41,6 +41,10 @@ Wrap your handler with FlowCron to add scheduling:
 
 ```cadence
 import "FlowCron"
+import "FlowTransactionScheduler"
+import "FlowTransactionSchedulerUtils"
+import "FlowToken"
+import "FungibleToken"
 
 // Store your task handler
 account.storage.save(<-create MyTaskHandler(), to: /storage/MyTaskHandler)
@@ -50,10 +54,31 @@ let handlerCap = account.capabilities.storage.issue<
     auth(FlowTransactionScheduler.Execute) &{FlowTransactionScheduler.TransactionHandler}
 >(/storage/MyTaskHandler)
 
+// Create capabilities for fee payment and scheduling (stored securely in resource)
+let feeProviderCap = account.capabilities.storage.issue<
+    auth(FungibleToken.Withdraw) &FlowToken.Vault
+>(/storage/flowTokenVault)
+
+// Ensure manager exists
+if account.storage.borrow<&{FlowTransactionSchedulerUtils.Manager}>(
+    from: FlowTransactionSchedulerUtils.managerStoragePath
+) == nil {
+    account.storage.save(
+        <-FlowTransactionSchedulerUtils.createManager(),
+        to: FlowTransactionSchedulerUtils.managerStoragePath
+    )
+}
+let schedulerManagerCap = account.capabilities.storage.issue<
+    auth(FlowTransactionSchedulerUtils.Owner) &{FlowTransactionSchedulerUtils.Manager}
+>(FlowTransactionSchedulerUtils.managerStoragePath)
+
 // Create cron handler (runs every day at midnight)
+// Capabilities are stored securely in the resource, not passed in transaction data
 let cronHandler <- FlowCron.createCronHandler(
     cronExpression: "0 0 * * *",
-    wrappedHandlerCap: handlerCap
+    wrappedHandlerCap: handlerCap,
+    feeProviderCap: feeProviderCap,
+    schedulerManagerCap: schedulerManagerCap
 )
 
 // Store it
@@ -107,6 +132,10 @@ access(all) resource CronHandler: FlowTransactionScheduler.TransactionHandler, V
     // Wrapped handler
     access(self) let wrappedHandlerCap: Capability<auth(FlowTransactionScheduler.Execute) &{FlowTransactionScheduler.TransactionHandler}>
 
+    // Capabilities needed for rescheduling
+    access(self) let feeProviderCap: Capability<auth(FungibleToken.Withdraw) &FlowToken.Vault>
+    access(self) let schedulerManagerCap: Capability<auth(FlowTransactionSchedulerUtils.Owner) &{FlowTransactionSchedulerUtils.Manager}>
+
     // Scheduling state (internal)
     access(self) var nextScheduledKeeperID: UInt64?
     access(self) var nextScheduledExecutorID: UInt64?
@@ -143,8 +172,6 @@ Execution context passed with each scheduled transaction:
 
 ```cadence
 access(all) struct CronContext {
-    access(all) let schedulerManagerCap: Capability<auth(FlowTransactionSchedulerUtils.Owner) &{FlowTransactionSchedulerUtils.Manager}>
-    access(all) let feeProviderCap: Capability<auth(FungibleToken.Withdraw) &FlowToken.Vault>
     access(all) let priority: FlowTransactionScheduler.Priority
     access(all) let executionEffort: UInt64
     access(all) let wrappedData: AnyStruct?
