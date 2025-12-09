@@ -116,9 +116,9 @@ access(all) contract FlowCron {
     access(all) resource CronHandler: FlowTransactionScheduler.TransactionHandler, ViewResolver.Resolver {
 
         /// Cron expression for scheduling
-        access(all) let cronExpression: String
+        access(self) let cronExpression: String
         /// Cron spec for scheduling
-        access(all) let cronSpec: FlowCronUtils.CronSpec
+        access(self) let cronSpec: FlowCronUtils.CronSpec
 
         /// The handler that performs the actual work
         access(self) let wrappedHandlerCap: Capability<auth(FlowTransactionScheduler.Execute) &{FlowTransactionScheduler.TransactionHandler}>
@@ -438,10 +438,10 @@ access(all) contract FlowCron {
 
     /// Context passed to each cron execution
     access(all) struct CronContext {
-        access(all) let priority: FlowTransactionScheduler.Priority
-        access(all) let executionEffort: UInt64
-        access(all) let wrappedData: AnyStruct?
-        access(all) let executionMode: ExecutionMode
+        access(contract) let priority: FlowTransactionScheduler.Priority
+        access(contract) let executionEffort: UInt64
+        access(contract) let wrappedData: AnyStruct?
+        access(contract) let executionMode: ExecutionMode
 
         init(
             priority: FlowTransactionScheduler.Priority,
