@@ -126,8 +126,8 @@ The main resource that wraps any `TransactionHandler` with cron functionality:
 access(all) resource CronHandler: FlowTransactionScheduler.TransactionHandler, ViewResolver.Resolver
 {
     // Cron configuration
-    access(all) let cronExpression: String
-    access(all) let cronSpec: FlowCronUtils.CronSpec
+    access(self) let cronExpression: String
+    access(self) let cronSpec: FlowCronUtils.CronSpec
 
     // Wrapped handler
     access(self) let wrappedHandlerCap: Capability<auth(FlowTransactionScheduler.Execute) &{FlowTransactionScheduler.TransactionHandler}>
@@ -172,10 +172,10 @@ Execution context passed with each scheduled transaction:
 
 ```cadence
 access(all) struct CronContext {
-    access(all) let priority: FlowTransactionScheduler.Priority
-    access(all) let executionEffort: UInt64
-    access(all) let wrappedData: AnyStruct?
-    access(all) let executionMode: ExecutionMode
+    access(contract) let executionMode: ExecutionMode
+    access(contract) let priority: FlowTransactionScheduler.Priority
+    access(contract) let executionEffort: UInt64
+    access(contract) let wrappedData: AnyStruct?
 }
 ```
 
