@@ -510,7 +510,7 @@ access(all) contract FlowCron {
     
     init() {
         // Set fixed execution effort for keeper operations measured based on its double scheduling workload
-        self.KEEPER_EXECUTION_EFFORT = 5000
+        self.KEEPER_EXECUTION_EFFORT = 2500
         // Set fixed medium priority for keeper operations to balance reliability with cost efficiency
         self.KEEPER_PRIORITY = FlowTransactionScheduler.Priority.Medium
         // Keeper offset of 1 second to prevent race condition
