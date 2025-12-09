@@ -17,8 +17,6 @@ transaction(
     let executorTime: UInt64
     let keeperTime: UInt64
     let cronHandlerCap: Capability<auth(FlowTransactionScheduler.Execute) &{FlowTransactionScheduler.TransactionHandler}>
-    let feeProviderCap: Capability<auth(FungibleToken.Withdraw) &FlowToken.Vault>
-    let managerCap: Capability<auth(FlowTransactionSchedulerUtils.Owner) &{FlowTransactionSchedulerUtils.Manager}>
     let executorContext: FlowCron.CronContext
     let keeperContext: FlowCron.CronContext
     let executorFees: @FlowToken.Vault
@@ -48,37 +46,25 @@ transaction(
             ?? panic("Cannot find next execution time for cron expression")
         self.keeperTime = self.executorTime + FlowCron.KEEPER_OFFSET_SECONDS
 
-        // Create capabilities for CronContext
+        // Issue capability for cron handler (needed for scheduling)
         self.cronHandlerCap = signer.capabilities.storage.issue<auth(FlowTransactionScheduler.Execute) &{FlowTransactionScheduler.TransactionHandler}>(
             cronHandlerStoragePath
         )
 
-        self.feeProviderCap = signer.capabilities.storage.issue<auth(FungibleToken.Withdraw) &FlowToken.Vault>(
-            /storage/flowTokenVault
-        )
-
-        self.managerCap = signer.capabilities.storage.issue<auth(FlowTransactionSchedulerUtils.Owner) &{FlowTransactionSchedulerUtils.Manager}>(
-            FlowTransactionSchedulerUtils.managerStoragePath
-        )
-
         // Create EXECUTOR context (user's priority and effort)
         self.executorContext = FlowCron.CronContext(
-            schedulerManagerCap: self.managerCap,
-            feeProviderCap: self.feeProviderCap,
+            executionMode: FlowCron.ExecutionMode.Executor,
             priority: FlowTransactionScheduler.Priority(rawValue: priority)!,
             executionEffort: executionEffort,
-            wrappedData: wrappedData,
-            executionMode: FlowCron.ExecutionMode.Executor
+            wrappedData: wrappedData
         )
 
         // Create KEEPER context (fixed priority and effort)
         self.keeperContext = FlowCron.CronContext(
-            schedulerManagerCap: self.managerCap,
-            feeProviderCap: self.feeProviderCap,
+            executionMode: FlowCron.ExecutionMode.Keeper,
             priority: FlowCron.KEEPER_PRIORITY,
             executionEffort: FlowCron.KEEPER_EXECUTION_EFFORT,
-            wrappedData: wrappedData,
-            executionMode: FlowCron.ExecutionMode.Keeper
+            wrappedData: wrappedData
         )
 
         // Estimate fees for EXECUTOR

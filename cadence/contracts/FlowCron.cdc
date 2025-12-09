@@ -116,12 +116,16 @@ access(all) contract FlowCron {
     access(all) resource CronHandler: FlowTransactionScheduler.TransactionHandler, ViewResolver.Resolver {
 
         /// Cron expression for scheduling
-        access(all) let cronExpression: String
+        access(self) let cronExpression: String
         /// Cron spec for scheduling
-        access(all) let cronSpec: FlowCronUtils.CronSpec
+        access(self) let cronSpec: FlowCronUtils.CronSpec
 
         /// The handler that performs the actual work
         access(self) let wrappedHandlerCap: Capability<auth(FlowTransactionScheduler.Execute) &{FlowTransactionScheduler.TransactionHandler}>
+        /// Vault capability for fee payments for rescheduling
+        access(self) let feeProviderCap: Capability<auth(FungibleToken.Withdraw) &FlowToken.Vault>
+        /// Scheduler manager capability for rescheduling
+        access(self) let schedulerManagerCap: Capability<auth(FlowTransactionSchedulerUtils.Owner) &{FlowTransactionSchedulerUtils.Manager}>
 
         /// Next scheduled keeper transaction ID
         /// - nil: Cron not running (bootstrap required) or restart case
@@ -137,16 +141,22 @@ access(all) contract FlowCron {
 
         init(
             cronExpression: String,
-            wrappedHandlerCap: Capability<auth(FlowTransactionScheduler.Execute) &{FlowTransactionScheduler.TransactionHandler}>
+            wrappedHandlerCap: Capability<auth(FlowTransactionScheduler.Execute) &{FlowTransactionScheduler.TransactionHandler}>,
+            feeProviderCap: Capability<auth(FungibleToken.Withdraw) &FlowToken.Vault>,
+            schedulerManagerCap: Capability<auth(FlowTransactionSchedulerUtils.Owner) &{FlowTransactionSchedulerUtils.Manager}>
         ) {
             pre {
                 cronExpression.length > 0: "Cron expression cannot be empty"
                 wrappedHandlerCap.check(): "Invalid wrapped handler capability provided"
+                feeProviderCap.check(): "Invalid fee provider capability"
+                schedulerManagerCap.check(): "Invalid scheduler manager capability"
             }
 
             self.cronExpression = cronExpression
             self.cronSpec = FlowCronUtils.parse(expression: cronExpression) ?? panic("Invalid cron expression: ".concat(cronExpression))
             self.wrappedHandlerCap = wrappedHandlerCap
+            self.feeProviderCap = feeProviderCap
+            self.schedulerManagerCap = schedulerManagerCap
             self.nextScheduledKeeperID = nil
             self.nextScheduledExecutorID = nil
         }
@@ -198,7 +208,7 @@ access(all) contract FlowCron {
             // Returns nil if scheduling fails so we can tolerate executor failures
             var executorTxID = self.scheduleCronTransaction(
                 txID: txID,
-                mode: ExecutionMode.Executor,
+                executionMode: ExecutionMode.Executor,
                 timestamp: nextTick,
                 priority: context.priority,
                 executionEffort: context.executionEffort,
@@ -208,7 +218,7 @@ access(all) contract FlowCron {
             if executorTxID == nil && context.priority == FlowTransactionScheduler.Priority.High {
                 executorTxID = self.scheduleCronTransaction(
                     txID: txID,
-                    mode: ExecutionMode.Executor,
+                    executionMode: ExecutionMode.Executor,
                     timestamp: nextTick,
                     priority: FlowTransactionScheduler.Priority.Medium,
                     executionEffort: context.executionEffort,
@@ -230,7 +240,7 @@ access(all) contract FlowCron {
             // Offset ensures different timestamp slots -> different blocks -> no collision
             let keeperTxID = self.scheduleCronTransaction(
                 txID: txID,
-                mode: ExecutionMode.Keeper,
+                executionMode: ExecutionMode.Keeper,
                 timestamp: nextTick + FlowCron.KEEPER_OFFSET_SECONDS,
                 priority: FlowCron.KEEPER_PRIORITY,
                 executionEffort: FlowCron.KEEPER_EXECUTION_EFFORT,
@@ -276,24 +286,22 @@ access(all) contract FlowCron {
         /// Schedules a cron transaction (keeper or executor) with specified priority
         access(self) fun scheduleCronTransaction(
             txID: UInt64,
-            mode: ExecutionMode,
+            executionMode: ExecutionMode,
             timestamp: UInt64,
             priority: FlowTransactionScheduler.Priority,
             executionEffort: UInt64,
             context: CronContext
         ): UInt64? {
             // Borrow capabilities
-            let schedulerManager = context.schedulerManagerCap.borrow() ?? panic("Cannot borrow scheduler manager")
-            let feeVault = context.feeProviderCap.borrow() ?? panic("Cannot borrow fee provider")
+            let schedulerManager = self.schedulerManagerCap.borrow() ?? panic("Cannot borrow scheduler manager")
+            let feeVault = self.feeProviderCap.borrow() ?? panic("Cannot borrow fee provider")
 
             // Create execution context
             let execContext = CronContext(
-                schedulerManagerCap: context.schedulerManagerCap,
-                feeProviderCap: context.feeProviderCap,
+                executionMode: executionMode,
                 priority: priority,
                 executionEffort: executionEffort,
-                wrappedData: context.wrappedData,
-                executionMode: mode
+                wrappedData: context.wrappedData
             )
             // Estimate fees
             let estimate = FlowTransactionScheduler.estimate(
@@ -324,7 +332,7 @@ access(all) contract FlowCron {
                     // Insufficient funds, emits event
                     emit CronScheduleFailed(
                         txID: txID,
-                        executionMode: mode.rawValue,
+                        executionMode: executionMode.rawValue,
                         requiredAmount: requiredFee,
                         availableAmount: feeVault.balance,
                         cronExpression: self.cronExpression,
@@ -339,7 +347,7 @@ access(all) contract FlowCron {
             // If we arrive here, estimation failed so emit event and return nil
             emit CronEstimationFailed(
                 txID: txID,
-                executionMode: mode.rawValue,
+                executionMode: executionMode.rawValue,
                 priority: priority.rawValue,
                 executionEffort: executionEffort,
                 error: estimate.error,
@@ -428,36 +436,28 @@ access(all) contract FlowCron {
         }
     }
 
-    /// Context passed to each cron execution containing scheduler and fee capabilities
+    /// Context passed to each cron execution
     access(all) struct CronContext {
-        access(all) let schedulerManagerCap: Capability<auth(FlowTransactionSchedulerUtils.Owner) &{FlowTransactionSchedulerUtils.Manager}>
-        access(all) let feeProviderCap: Capability<auth(FungibleToken.Withdraw) &FlowToken.Vault>
-        access(all) let priority: FlowTransactionScheduler.Priority
-        access(all) let executionEffort: UInt64
-        access(all) let wrappedData: AnyStruct?
-        access(all) let executionMode: ExecutionMode
+        access(contract) let executionMode: ExecutionMode
+        access(contract) let priority: FlowTransactionScheduler.Priority
+        access(contract) let executionEffort: UInt64
+        access(contract) let wrappedData: AnyStruct?
 
         init(
-            schedulerManagerCap: Capability<auth(FlowTransactionSchedulerUtils.Owner) &{FlowTransactionSchedulerUtils.Manager}>,
-            feeProviderCap: Capability<auth(FungibleToken.Withdraw) &FlowToken.Vault>,
+            executionMode: ExecutionMode,
             priority: FlowTransactionScheduler.Priority,
             executionEffort: UInt64,
-            wrappedData: AnyStruct?,
-            executionMode: ExecutionMode
+            wrappedData: AnyStruct?
         ) {
             pre {
-                schedulerManagerCap.check(): "Invalid scheduler manager capability"
-                feeProviderCap.check(): "Invalid fee provider capability"
                 executionEffort >= 10: "Execution effort must be at least 10 (scheduler minimum)"
                 executionEffort <= 9999: "Execution effort must be at most 9999 (scheduler maximum)"
             }
 
-            self.schedulerManagerCap = schedulerManagerCap
-            self.feeProviderCap = feeProviderCap
+            self.executionMode = executionMode
             self.priority = priority
             self.executionEffort = executionEffort
             self.wrappedData = wrappedData
-            self.executionMode = executionMode
         }
     }
     
@@ -496,17 +496,21 @@ access(all) contract FlowCron {
     /// Create a new CronHandler resource
     access(all) fun createCronHandler(
         cronExpression: String,
-        wrappedHandlerCap: Capability<auth(FlowTransactionScheduler.Execute) &{FlowTransactionScheduler.TransactionHandler}>
+        wrappedHandlerCap: Capability<auth(FlowTransactionScheduler.Execute) &{FlowTransactionScheduler.TransactionHandler}>,
+        feeProviderCap: Capability<auth(FungibleToken.Withdraw) &FlowToken.Vault>,
+        schedulerManagerCap: Capability<auth(FlowTransactionSchedulerUtils.Owner) &{FlowTransactionSchedulerUtils.Manager}>
     ): @CronHandler {
         return <- create CronHandler(
             cronExpression: cronExpression,
-            wrappedHandlerCap: wrappedHandlerCap
+            wrappedHandlerCap: wrappedHandlerCap,
+            feeProviderCap: feeProviderCap,
+            schedulerManagerCap: schedulerManagerCap
         )
     }
     
     init() {
         // Set fixed execution effort for keeper operations measured based on its double scheduling workload
-        self.KEEPER_EXECUTION_EFFORT = 5000
+        self.KEEPER_EXECUTION_EFFORT = 2500
         // Set fixed medium priority for keeper operations to balance reliability with cost efficiency
         self.KEEPER_PRIORITY = FlowTransactionScheduler.Priority.Medium
         // Keeper offset of 1 second to prevent race condition
