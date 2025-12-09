@@ -208,7 +208,7 @@ access(all) contract FlowCron {
             // Returns nil if scheduling fails so we can tolerate executor failures
             var executorTxID = self.scheduleCronTransaction(
                 txID: txID,
-                mode: ExecutionMode.Executor,
+                executionMode: ExecutionMode.Executor,
                 timestamp: nextTick,
                 priority: context.priority,
                 executionEffort: context.executionEffort,
@@ -218,7 +218,7 @@ access(all) contract FlowCron {
             if executorTxID == nil && context.priority == FlowTransactionScheduler.Priority.High {
                 executorTxID = self.scheduleCronTransaction(
                     txID: txID,
-                    mode: ExecutionMode.Executor,
+                    executionMode: ExecutionMode.Executor,
                     timestamp: nextTick,
                     priority: FlowTransactionScheduler.Priority.Medium,
                     executionEffort: context.executionEffort,
@@ -240,7 +240,7 @@ access(all) contract FlowCron {
             // Offset ensures different timestamp slots -> different blocks -> no collision
             let keeperTxID = self.scheduleCronTransaction(
                 txID: txID,
-                mode: ExecutionMode.Keeper,
+                executionMode: ExecutionMode.Keeper,
                 timestamp: nextTick + FlowCron.KEEPER_OFFSET_SECONDS,
                 priority: FlowCron.KEEPER_PRIORITY,
                 executionEffort: FlowCron.KEEPER_EXECUTION_EFFORT,
@@ -286,7 +286,7 @@ access(all) contract FlowCron {
         /// Schedules a cron transaction (keeper or executor) with specified priority
         access(self) fun scheduleCronTransaction(
             txID: UInt64,
-            mode: ExecutionMode,
+            executionMode: ExecutionMode,
             timestamp: UInt64,
             priority: FlowTransactionScheduler.Priority,
             executionEffort: UInt64,
@@ -298,10 +298,10 @@ access(all) contract FlowCron {
 
             // Create execution context
             let execContext = CronContext(
+                executionMode: executionMode,
                 priority: priority,
                 executionEffort: executionEffort,
-                wrappedData: context.wrappedData,
-                executionMode: mode
+                wrappedData: context.wrappedData
             )
             // Estimate fees
             let estimate = FlowTransactionScheduler.estimate(
@@ -332,7 +332,7 @@ access(all) contract FlowCron {
                     // Insufficient funds, emits event
                     emit CronScheduleFailed(
                         txID: txID,
-                        executionMode: mode.rawValue,
+                        executionMode: executionMode.rawValue,
                         requiredAmount: requiredFee,
                         availableAmount: feeVault.balance,
                         cronExpression: self.cronExpression,
@@ -347,7 +347,7 @@ access(all) contract FlowCron {
             // If we arrive here, estimation failed so emit event and return nil
             emit CronEstimationFailed(
                 txID: txID,
-                executionMode: mode.rawValue,
+                executionMode: executionMode.rawValue,
                 priority: priority.rawValue,
                 executionEffort: executionEffort,
                 error: estimate.error,
@@ -438,26 +438,26 @@ access(all) contract FlowCron {
 
     /// Context passed to each cron execution
     access(all) struct CronContext {
+        access(contract) let executionMode: ExecutionMode
         access(contract) let priority: FlowTransactionScheduler.Priority
         access(contract) let executionEffort: UInt64
         access(contract) let wrappedData: AnyStruct?
-        access(contract) let executionMode: ExecutionMode
 
         init(
+            executionMode: ExecutionMode,
             priority: FlowTransactionScheduler.Priority,
             executionEffort: UInt64,
-            wrappedData: AnyStruct?,
-            executionMode: ExecutionMode
+            wrappedData: AnyStruct?
         ) {
             pre {
                 executionEffort >= 10: "Execution effort must be at least 10 (scheduler minimum)"
                 executionEffort <= 9999: "Execution effort must be at most 9999 (scheduler maximum)"
             }
 
+            self.executionMode = executionMode
             self.priority = priority
             self.executionEffort = executionEffort
             self.wrappedData = wrappedData
-            self.executionMode = executionMode
         }
     }
     

@@ -53,18 +53,18 @@ transaction(
 
         // Create EXECUTOR context (user's priority and effort)
         self.executorContext = FlowCron.CronContext(
+            executionMode: FlowCron.ExecutionMode.Executor,
             priority: FlowTransactionScheduler.Priority(rawValue: priority)!,
             executionEffort: executionEffort,
-            wrappedData: wrappedData,
-            executionMode: FlowCron.ExecutionMode.Executor
+            wrappedData: wrappedData
         )
 
         // Create KEEPER context (fixed priority and effort)
         self.keeperContext = FlowCron.CronContext(
+            executionMode: FlowCron.ExecutionMode.Keeper,
             priority: FlowCron.KEEPER_PRIORITY,
             executionEffort: FlowCron.KEEPER_EXECUTION_EFFORT,
-            wrappedData: wrappedData,
-            executionMode: FlowCron.ExecutionMode.Keeper
+            wrappedData: wrappedData
         )
 
         // Estimate fees for EXECUTOR
