@@ -11,7 +11,6 @@ FlowCron leverages Flow's native transaction scheduling capabilities (FLIP-330) 
 - **Standard Cron Syntax**: Uses familiar 5-field cron expressions (minute, hour, day-of-month, month, day-of-week)
 - **Self-Perpetuating**: Jobs automatically reschedule themselves after each execution
 - **Keeper/Executor Architecture**: Separates scheduling logic from user code for fault isolation
-- **Priority Fallback**: Automatic High→Medium priority fallback when slots are full
 - **Fault Tolerant**: Executor failures don't stop the keeper from scheduling next cycle
 - **Flexible Priority**: Supports High, Medium, and Low priority executions
 - **View Resolver Integration**: Full support for querying job states and metadata
@@ -221,7 +220,7 @@ Time ─────────────────────────
 
 - **Fault Isolation**: If executor panics (user code error), keeper still runs and schedules next cycle
 - **No Silent Death**: Keeper uses force-unwrap - if scheduling fails, it panics loudly (better than silent stop)
-- **Priority Fallback**: Executor tries High priority first, falls back to Medium if slot is full
+- **Strict Priority**: Executor uses exactly the priority you specify - if High priority slot is full, that tick is skipped (use Medium for guaranteed scheduling)
 
 #### 2. Bootstrap Process
 
@@ -283,10 +282,9 @@ FlowCron emits detailed events for monitoring:
 |-------|--------------|
 | `CronKeeperExecuted` | Keeper successfully scheduled next cycle |
 | `CronExecutorExecuted` | Executor successfully ran user code |
-| `CronExecutorFallback` | Executor fell back from High to Medium priority |
 | `CronScheduleRejected` | Duplicate/unauthorized keeper was blocked |
 | `CronScheduleFailed` | Scheduling failed (insufficient funds) |
-| `CronEstimationFailed` | Fee estimation failed |
+| `CronEstimationFailed` | Fee estimation failed (e.g., High priority slot full) |
 | `KeeperExecutionEffortUpdated` | Admin updated keeper execution effort |
 
 ### Admin Configuration

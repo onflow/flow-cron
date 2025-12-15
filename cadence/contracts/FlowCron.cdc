@@ -54,7 +54,7 @@ access(all) contract FlowCron {
         txID: UInt64,
         nextExecutorTxID: UInt64?,
         nextKeeperTxID: UInt64,
-        nextExecutorTime: UInt64,
+        nextExecutorTime: UInt64?,
         nextKeeperTime: UInt64,
         cronExpression: String,
         handlerUUID: UInt64,
@@ -64,15 +64,6 @@ access(all) contract FlowCron {
 
     /// Emitted when executor successfully completes user code
     access(all) event CronExecutorExecuted(
-        txID: UInt64,
-        cronExpression: String,
-        handlerUUID: UInt64,
-        wrappedHandlerType: String?,
-        wrappedHandlerUUID: UInt64?
-    )
-
-    /// Emitted when executor scheduling falls back to Medium priority
-    access(all) event CronExecutorFallback(
         txID: UInt64,
         cronExpression: String,
         handlerUUID: UInt64,
@@ -218,9 +209,10 @@ access(all) contract FlowCron {
             let currentTime = UInt64(getCurrentBlock().timestamp)
             let nextTick = FlowCronUtils.nextTick(spec: self.cronSpec, afterUnix: currentTime) ?? panic("Cannot calculate next cron tick")
 
-            // Schedule executor FIRST at exact cron tick (user's work runs exactly on time)
-            // Returns nil if scheduling fails so we can tolerate executor failures
-            var executorTxID = self.scheduleCronTransaction(
+            // Schedule executor FIRST at exact cron tick
+            // Returns nil if scheduling fails (only possible with High priority slot full)
+            // No fallback to execute exactly as user meant it to run so that its work is explicit
+            let executorTxID = self.scheduleCronTransaction(
                 txID: txID,
                 executionMode: ExecutionMode.Executor,
                 timestamp: nextTick,
@@ -228,26 +220,7 @@ access(all) contract FlowCron {
                 executionEffort: context.executionEffort,
                 context: context
             )
-            // Priority fallback: if High priority failed, retry with Medium that is guaranteed to find a slot
-            if executorTxID == nil && context.priority == FlowTransactionScheduler.Priority.High {
-                executorTxID = self.scheduleCronTransaction(
-                    txID: txID,
-                    executionMode: ExecutionMode.Executor,
-                    timestamp: nextTick,
-                    priority: FlowTransactionScheduler.Priority.Medium,
-                    executionEffort: context.executionEffort,
-                    context: context
-                )
-                let wrappedHandler = self.wrappedHandlerCap.borrow()
-                emit CronExecutorFallback(
-                    txID: txID,
-                    cronExpression: self.cronExpression,
-                    handlerUUID: self.uuid,
-                    wrappedHandlerType: wrappedHandler?.getType()?.identifier,
-                    wrappedHandlerUUID: wrappedHandler?.uuid
-                )
-            }
-            // Store executor transaction ID for cancellation support
+            // Store executor transaction ID for cancellation support (nil if scheduling failed)
             self.nextScheduledExecutorID = executorTxID
 
             // Schedule keeper SECOND with 1 second offset to prevent race condition
@@ -269,7 +242,7 @@ access(all) contract FlowCron {
                 txID: txID,
                 nextExecutorTxID: executorTxID,
                 nextKeeperTxID: keeperTxID,
-                nextExecutorTime: nextTick,
+                nextExecutorTime: executorTxID != nil ? nextTick : nil,
                 nextKeeperTime: nextTick + FlowCron.keeperOffset,
                 cronExpression: self.cronExpression,
                 handlerUUID: self.uuid,
