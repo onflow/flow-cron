@@ -1322,6 +1322,143 @@ access(all) fun test_ResolveViewReturnsNilForUnknownType() {
 }
 
 // ============================================================================
+// ADMIN TESTS
+// ============================================================================
+
+/// Helper: Get the contract account (where Admin resource is stored)
+access(all) fun getContractAccount(): Test.TestAccount {
+    // FlowCron is deployed to this address per flow.json testing alias
+    return Test.getAccount(0x0000000000000007)
+}
+
+/// Test that admin can update keeper execution effort
+access(all) fun test_AdminCanUpdateKeeperExecutionEffort() {
+    // Get the contract account where Admin is stored
+    let adminAccount = getContractAccount()
+
+    // Get initial value
+    let getEffortCode = "import FlowCron from \"FlowCron\"\n\n"
+        .concat("access(all) fun main(): UInt64 {\n")
+        .concat("    return FlowCron.keeperExecutionEffort\n")
+        .concat("}")
+
+    let initialResult = Test.executeScript(getEffortCode, [])
+    Test.expect(initialResult, Test.beSucceeded())
+    let initialEffort = initialResult.returnValue! as! UInt64
+    Test.assertEqual(2500 as UInt64, initialEffort)
+
+    // Update via admin transaction using the contract account
+    let updateResult = Test.executeTransaction(
+        Test.Transaction(
+            code: Test.readFile("../transactions/admin/SetKeeperExecutionEffort.cdc"),
+            authorizers: [adminAccount.address],
+            signers: [adminAccount],
+            arguments: [3000 as UInt64]
+        )
+    )
+    Test.expect(updateResult, Test.beSucceeded())
+
+    // Verify event was emitted
+    let events = Test.eventsOfType(Type<FlowCron.KeeperExecutionEffortUpdated>())
+    Test.assert(events.length > 0, message: "Should emit KeeperExecutionEffortUpdated event")
+    let lastEvent = events[events.length - 1] as! FlowCron.KeeperExecutionEffortUpdated
+    Test.assertEqual(2500 as UInt64, lastEvent.oldEffort)
+    Test.assertEqual(3000 as UInt64, lastEvent.newEffort)
+
+    // Verify new value
+    let updatedResult = Test.executeScript(getEffortCode, [])
+    Test.expect(updatedResult, Test.beSucceeded())
+    let updatedEffort = updatedResult.returnValue! as! UInt64
+    Test.assertEqual(3000 as UInt64, updatedEffort)
+
+    // Reset back to original for other tests
+    let resetResult = Test.executeTransaction(
+        Test.Transaction(
+            code: Test.readFile("../transactions/admin/SetKeeperExecutionEffort.cdc"),
+            authorizers: [adminAccount.address],
+            signers: [adminAccount],
+            arguments: [2500 as UInt64]
+        )
+    )
+    Test.expect(resetResult, Test.beSucceeded())
+}
+
+/// Test that admin update fails with effort below minimum (10)
+access(all) fun test_AdminUpdateFailsBelowMinimum() {
+    let adminAccount = getContractAccount()
+    let updateResult = Test.executeTransaction(
+        Test.Transaction(
+            code: Test.readFile("../transactions/admin/SetKeeperExecutionEffort.cdc"),
+            authorizers: [adminAccount.address],
+            signers: [adminAccount],
+            arguments: [5 as UInt64]  // Below minimum of 10
+        )
+    )
+    Test.expect(updateResult, Test.beFailed())
+}
+
+/// Test that admin update fails with effort above maximum (9999)
+access(all) fun test_AdminUpdateFailsAboveMaximum() {
+    let adminAccount = getContractAccount()
+    let updateResult = Test.executeTransaction(
+        Test.Transaction(
+            code: Test.readFile("../transactions/admin/SetKeeperExecutionEffort.cdc"),
+            authorizers: [adminAccount.address],
+            signers: [adminAccount],
+            arguments: [10000 as UInt64]  // Above maximum of 9999
+        )
+    )
+    Test.expect(updateResult, Test.beFailed())
+}
+
+/// Test that non-admin cannot update keeper execution effort
+access(all) fun test_NonAdminCannotUpdateKeeperExecutionEffort() {
+    // Create a new account that doesn't have the Admin resource
+    let nonAdminAccount = Test.createAccount()
+
+    let updateResult = Test.executeTransaction(
+        Test.Transaction(
+            code: Test.readFile("../transactions/admin/SetKeeperExecutionEffort.cdc"),
+            authorizers: [nonAdminAccount.address],
+            signers: [nonAdminAccount],
+            arguments: [3000 as UInt64]
+        )
+    )
+    Test.expect(updateResult, Test.beFailed())
+}
+
+/// Test that service account (testAccount) cannot update keeper execution effort
+/// This verifies that only the contract deployer has admin access, not any service account
+access(all) fun test_ServiceAccountCannotUpdateKeeperExecutionEffort() {
+    // testAccount is the service account, NOT the contract deployer
+    // The Admin resource is only in the contract deployer's account (0x0000000000000007)
+    let updateResult = Test.executeTransaction(
+        Test.Transaction(
+            code: Test.readFile("../transactions/admin/SetKeeperExecutionEffort.cdc"),
+            authorizers: [testAccount.address],
+            signers: [testAccount],
+            arguments: [3000 as UInt64]
+        )
+    )
+    Test.expect(updateResult, Test.beFailed())
+}
+
+/// Test that keeperExecutionEffort is publicly readable
+access(all) fun test_KeeperExecutionEffortIsPubliclyReadable() {
+    let getEffortCode = "import FlowCron from \"FlowCron\"\n\n"
+        .concat("access(all) fun main(): UInt64 {\n")
+        .concat("    return FlowCron.keeperExecutionEffort\n")
+        .concat("}")
+
+    let result = Test.executeScript(getEffortCode, [])
+    Test.expect(result, Test.beSucceeded())
+
+    let effort = result.returnValue! as! UInt64
+    Test.assert(effort >= 10, message: "Effort should be at least minimum (10)")
+    Test.assert(effort <= 9999, message: "Effort should be at most maximum (9999)")
+}
+
+// ============================================================================
 // HELPER FUNCTIONS
 // ============================================================================
 

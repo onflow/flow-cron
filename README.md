@@ -287,6 +287,35 @@ FlowCron emits detailed events for monitoring:
 | `CronScheduleRejected` | Duplicate/unauthorized keeper was blocked |
 | `CronScheduleFailed` | Scheduling failed (insufficient funds) |
 | `CronEstimationFailed` | Fee estimation failed |
+| `KeeperExecutionEffortUpdated` | Admin updated keeper execution effort |
+
+### Admin Configuration
+
+FlowCron includes an Admin resource for contract configuration updates that may be needed if Flow's execution weights change.
+
+**Admin Resource:**
+
+- Created once at contract deployment
+- Stored in the contract deployer's account at `/storage/flowCronAdmin`
+- Only the deployer can update configuration
+
+**Configurable Parameters:**
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `keeperExecutionEffort` | 2500 | Execution effort for keeper scheduling operations |
+
+**Updating Configuration:**
+
+```bash
+# Only contract deployer can run this
+flow transactions send cadence/transactions/admin/SetKeeperExecutionEffort.cdc 3000
+```
+
+**Security:**
+
+- Uses `Owner` entitlement for explicit authorization
+- Bounds validation: effort must be between 10 and 9999 (scheduler limits)
 
 ## Cron Expression Engine
 

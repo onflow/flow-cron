@@ -44,7 +44,7 @@ transaction(
         let currentTime = UInt64(getCurrentBlock().timestamp)
         self.executorTime = FlowCronUtils.nextTick(spec: cronSpec, afterUnix: currentTime)
             ?? panic("Cannot find next execution time for cron expression")
-        self.keeperTime = self.executorTime + FlowCron.KEEPER_OFFSET_SECONDS
+        self.keeperTime = self.executorTime + FlowCron.keeperOffset
 
         // Issue capability for cron handler (needed for scheduling)
         self.cronHandlerCap = signer.capabilities.storage.issue<auth(FlowTransactionScheduler.Execute) &{FlowTransactionScheduler.TransactionHandler}>(
@@ -62,8 +62,8 @@ transaction(
         // Create KEEPER context (fixed priority and effort)
         self.keeperContext = FlowCron.CronContext(
             executionMode: FlowCron.ExecutionMode.Keeper,
-            priority: FlowCron.KEEPER_PRIORITY,
-            executionEffort: FlowCron.KEEPER_EXECUTION_EFFORT,
+            priority: FlowCron.keeperPriority,
+            executionEffort: FlowCron.keeperExecutionEffort,
             wrappedData: wrappedData
         )
 
@@ -81,8 +81,8 @@ transaction(
         let keeperEstimate = FlowTransactionScheduler.estimate(
             data: self.keeperContext,
             timestamp: UFix64(self.keeperTime),
-            priority: FlowCron.KEEPER_PRIORITY,
-            executionEffort: FlowCron.KEEPER_EXECUTION_EFFORT
+            priority: FlowCron.keeperPriority,
+            executionEffort: FlowCron.keeperExecutionEffort
         )
 
         let keeperFee = keeperEstimate.flowFee ?? panic("Cannot estimate keeper fee")
@@ -119,8 +119,8 @@ transaction(
             handlerCap: self.cronHandlerCap,
             data: self.keeperContext,
             timestamp: UFix64(self.keeperTime),
-            priority: FlowCron.KEEPER_PRIORITY,
-            executionEffort: FlowCron.KEEPER_EXECUTION_EFFORT,
+            priority: FlowCron.keeperPriority,
+            executionEffort: FlowCron.keeperExecutionEffort,
             fees: <-self.keeperFees
         )
     }
