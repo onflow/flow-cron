@@ -93,8 +93,17 @@ flow transactions send cadence/transactions/ScheduleCronHandler.cdc \
     --arg Path:/storage/MyCronHandler \
     --arg 'Optional(String):null' \
     --arg UInt8:2 \
-    --arg UInt64:100
+    --arg UInt64:100 \
+    --arg UInt64:2500
 ```
+
+**Parameters:**
+
+- `cronHandlerStoragePath`: Path to your CronHandler
+- `wrappedData`: Optional data passed to your handler
+- `executorPriority`: Priority for executor (0=High, 1=Medium, 2=Low)
+- `executorExecutionEffort`: Execution effort for user code (100-9999)
+- `keeperExecutionEffort`: Execution effort for keeper scheduling (recommended: 2500)
 
 ### 4. Monitor & Control
 
@@ -167,16 +176,23 @@ access(all) enum ExecutionMode: UInt8 {
 
 #### CronContext Struct
 
-Execution context passed with each scheduled transaction:
+Execution context passed with each scheduled transaction. This allows scheduling the same CronHandler with different configurations without recreating the resource:
 
 ```cadence
 access(all) struct CronContext {
     access(contract) let executionMode: ExecutionMode
-    access(contract) let priority: FlowTransactionScheduler.Priority
-    access(contract) let executionEffort: UInt64
+    access(contract) let executorPriority: FlowTransactionScheduler.Priority
+    access(contract) let executorExecutionEffort: UInt64
+    access(contract) let keeperExecutionEffort: UInt64
     access(contract) let wrappedData: AnyStruct?
 }
 ```
+
+- `executionMode`: Whether this is a Keeper or Executor transaction
+- `executorPriority`: Priority for executor transactions (High, Medium, Low)
+- `executorExecutionEffort`: Computational effort for user code execution
+- `keeperExecutionEffort`: Computational effort for keeper scheduling operations
+- `wrappedData`: Optional data passed to your handler
 
 #### CronInfo View
 
@@ -285,35 +301,6 @@ FlowCron emits detailed events for monitoring:
 | `CronScheduleRejected` | Duplicate/unauthorized keeper was blocked |
 | `CronScheduleFailed` | Scheduling failed (insufficient funds) |
 | `CronEstimationFailed` | Fee estimation failed (e.g., High priority slot full) |
-| `KeeperExecutionEffortUpdated` | Admin updated keeper execution effort |
-
-### Admin Configuration
-
-FlowCron includes an Admin resource for contract configuration updates that may be needed if Flow's execution weights change.
-
-**Admin Resource:**
-
-- Created once at contract deployment
-- Stored in the contract deployer's account at `/storage/flowCronAdmin`
-- Only the deployer can update configuration
-
-**Configurable Parameters:**
-
-| Parameter | Default | Description |
-|-----------|---------|-------------|
-| `keeperExecutionEffort` | 2500 | Execution effort for keeper scheduling operations |
-
-**Updating Configuration:**
-
-```bash
-# Only contract deployer can run this
-flow transactions send cadence/transactions/admin/SetKeeperExecutionEffort.cdc 3000
-```
-
-**Security:**
-
-- Uses `Owner` entitlement for explicit authorization
-- Bounds validation: effort must be between 10 and 9999 (scheduler limits)
 
 ## Cron Expression Engine
 

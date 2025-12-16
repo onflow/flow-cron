@@ -31,23 +31,12 @@ import "MetadataViews"
 /// - System survives wrapped handler panics/failures
 access(all) contract FlowCron {
 
-    /// Entitlement for the contract owner
-    access(all) entitlement Owner
-
-    /// Admin storage path
-    access(all) let adminStoragePath: StoragePath
-
     /// Fixed priority for keeper operations
     /// Medium priority ensures reliable scheduling without slot filling issues
     access(all) let keeperPriority: FlowTransactionScheduler.Priority
     /// Offset in seconds for keeper scheduling relative to executor
     /// Essential for being scheduled after executor to prevent collision at T+1
     access(all) let keeperOffset: UInt64
-
-    /// Configurable execution effort for keeper operations
-    /// Empirically measured: 1 nextTick calculation + 2 scheduleExecution calls + event emission
-    /// Can be updated by Admin if scheduler execution weights change
-    access(all) var keeperExecutionEffort: UInt64
 
     /// Emitted when keeper successfully schedules next cycle
     access(all) event CronKeeperExecuted(
@@ -103,12 +92,6 @@ access(all) contract FlowCron {
         handlerUUID: UInt64,
         wrappedHandlerType: String?,
         wrappedHandlerUUID: UInt64?
-    )
-
-    /// Emitted when admin updates keeper execution effort
-    access(all) event KeeperExecutionEffortUpdated(
-        oldEffort: UInt64, 
-        newEffort: UInt64
     )
 
     /// Execution mode selector for dual-mode handler
@@ -216,8 +199,8 @@ access(all) contract FlowCron {
                 txID: txID,
                 executionMode: ExecutionMode.Executor,
                 timestamp: nextTick,
-                priority: context.priority,
-                executionEffort: context.executionEffort,
+                priority: context.executorPriority,
+                executionEffort: context.executorExecutionEffort,
                 context: context
             )
             // Store executor transaction ID for cancellation support (nil if scheduling failed)
@@ -240,7 +223,7 @@ access(all) contract FlowCron {
                 executionMode: ExecutionMode.Keeper,
                 timestamp: keeperTimestamp,
                 priority: FlowCron.keeperPriority,
-                executionEffort: FlowCron.keeperExecutionEffort,
+                executionEffort: context.keeperExecutionEffort,
                 context: context
             )!
             // Store keeper transaction ID to prevent duplicate scheduling
@@ -293,11 +276,12 @@ access(all) contract FlowCron {
             let schedulerManager = self.schedulerManagerCap.borrow() ?? panic("Cannot borrow scheduler manager")
             let feeVault = self.feeProviderCap.borrow() ?? panic("Cannot borrow fee provider")
 
-            // Create execution context
+            // Create execution context preserving original executor/keeper config
             let execContext = CronContext(
                 executionMode: executionMode,
-                priority: priority,
-                executionEffort: executionEffort,
+                executorPriority: context.executorPriority,
+                executorExecutionEffort: context.executorExecutionEffort,
+                keeperExecutionEffort: context.keeperExecutionEffort,
                 wrappedData: context.wrappedData
             )
             // Estimate fees
@@ -436,24 +420,29 @@ access(all) contract FlowCron {
     /// Context passed to each cron execution
     access(all) struct CronContext {
         access(contract) let executionMode: ExecutionMode
-        access(contract) let priority: FlowTransactionScheduler.Priority
-        access(contract) let executionEffort: UInt64
+        access(contract) let executorPriority: FlowTransactionScheduler.Priority
+        access(contract) let executorExecutionEffort: UInt64
+        access(contract) let keeperExecutionEffort: UInt64
         access(contract) let wrappedData: AnyStruct?
 
         init(
             executionMode: ExecutionMode,
-            priority: FlowTransactionScheduler.Priority,
-            executionEffort: UInt64,
+            executorPriority: FlowTransactionScheduler.Priority,
+            executorExecutionEffort: UInt64,
+            keeperExecutionEffort: UInt64,
             wrappedData: AnyStruct?
         ) {
             pre {
-                executionEffort >= 10: "Execution effort must be at least 10 (scheduler minimum)"
-                executionEffort <= 9999: "Execution effort must be at most 9999 (scheduler maximum)"
+                executorExecutionEffort >= 100: "Executor execution effort must be at least 100 (scheduler minimum)"
+                executorExecutionEffort <= 9999: "Executor execution effort must be at most 9999 (scheduler maximum)"
+                keeperExecutionEffort >= 100: "Keeper execution effort must be at least 100 (scheduler minimum)"
+                keeperExecutionEffort <= 9999: "Keeper execution effort must be at most 9999 (scheduler maximum)"
             }
 
             self.executionMode = executionMode
-            self.priority = priority
-            self.executionEffort = executionEffort
+            self.executorPriority = executorPriority
+            self.executorExecutionEffort = executorExecutionEffort
+            self.keeperExecutionEffort = keeperExecutionEffort
             self.wrappedData = wrappedData
         }
     }
@@ -505,32 +494,10 @@ access(all) contract FlowCron {
         )
     }
 
-    /// Admin resource for contract configuration, created once at contract deployment and stored in deployer's account
-    access(all) resource Admin {
-        access(Owner) fun setKeeperExecutionEffort(_ effort: UInt64) {
-            pre {
-                effort >= 10: "Keeper execution effort must be at least 10"
-                effort <= 9999: "Keeper execution effort must be at most 9999"
-            }
-            let oldEffort = FlowCron.keeperExecutionEffort
-            FlowCron.keeperExecutionEffort = effort
-            emit KeeperExecutionEffortUpdated(oldEffort: oldEffort, newEffort: effort)
-        }
-    }
-
     init() {
         // Set fixed medium priority for keeper operations to balance reliability with cost efficiency
         self.keeperPriority = FlowTransactionScheduler.Priority.Medium
         // Keeper offset of 1 second to prevent race condition
         self.keeperOffset = 1
-
-        // Set configurable execution effort for keeper operations measured based on its double scheduling workload
-        self.keeperExecutionEffort = 2500
-
-        // Admin storage path
-        self.adminStoragePath = /storage/flowCronAdmin
-        // Create and save Admin to contract deployer's account
-        let admin <- create Admin()
-        self.account.storage.save(<-admin, to: self.adminStoragePath)
     }
 }
