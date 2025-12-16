@@ -886,6 +886,9 @@ access(all) fun test_ContinuousExecution() {
     )
     Test.expect(createResult, Test.beSucceeded())
 
+    // Capture initial timestamp BEFORE scheduling (critical for correct time calculations)
+    let initialTimestamp = getTimestamp()
+
     let scheduleResult = Test.executeTransaction(
         Test.Transaction(
             code: Test.readFile("../transactions/ScheduleCronHandler.cdc"),
@@ -905,7 +908,7 @@ access(all) fun test_ContinuousExecution() {
     let executorEventsBefore = Test.eventsOfType(Type<FlowCron.CronExecutorExecuted>())
 
     // Execute multiple cycles
-    var currentTimestamp = getTimestamp()
+    var currentTimestamp = initialTimestamp
     let scheduledEvents = Test.eventsOfType(Type<FlowTransactionScheduler.Scheduled>())
     var nextEvent = scheduledEvents[scheduledEvents.length - 1] as! FlowTransactionScheduler.Scheduled
 
