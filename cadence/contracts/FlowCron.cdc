@@ -223,12 +223,22 @@ access(all) contract FlowCron {
             // Store executor transaction ID for cancellation support (nil if scheduling failed)
             self.nextScheduledExecutorID = executorTxID
 
-            // Schedule keeper SECOND with 1 second offset to prevent race condition
-            // Offset ensures different timestamp slots -> different blocks -> no collision
+            // Determine keeper timestamp based on actual executor schedule
+            // For Medium/Low priority, actual scheduled time may differ from requested nextTick
+            // Keeper must run AFTER executor, so use actual executor timestamp + offset
+            var actualExecutorTime: UInt64? = nil
+            var keeperTimestamp = nextTick + FlowCron.keeperOffset
+            if let execID = executorTxID {
+                if let txData = FlowTransactionScheduler.getTransactionData(id: execID) {
+                    actualExecutorTime = UInt64(txData.scheduledTimestamp)
+                    keeperTimestamp = actualExecutorTime! + FlowCron.keeperOffset
+                }
+            }
+            // Schedule keeper with offset from actual executor time (or nextTick if executor failed)
             let keeperTxID = self.scheduleCronTransaction(
                 txID: txID,
                 executionMode: ExecutionMode.Keeper,
-                timestamp: nextTick + FlowCron.keeperOffset,
+                timestamp: keeperTimestamp,
                 priority: FlowCron.keeperPriority,
                 executionEffort: FlowCron.keeperExecutionEffort,
                 context: context
@@ -236,14 +246,14 @@ access(all) contract FlowCron {
             // Store keeper transaction ID to prevent duplicate scheduling
             self.nextScheduledKeeperID = keeperTxID
 
-            // Emit keeper executed event
+            // Emit keeper executed event with actual scheduled times
             let wrappedHandler = self.wrappedHandlerCap.borrow()
             emit CronKeeperExecuted(
                 txID: txID,
                 nextExecutorTxID: executorTxID,
                 nextKeeperTxID: keeperTxID,
-                nextExecutorTime: executorTxID != nil ? nextTick : nil,
-                nextKeeperTime: nextTick + FlowCron.keeperOffset,
+                nextExecutorTime: actualExecutorTime,
+                nextKeeperTime: keeperTimestamp,
                 cronExpression: self.cronExpression,
                 handlerUUID: self.uuid,
                 wrappedHandlerType: wrappedHandler?.getType()?.identifier,
