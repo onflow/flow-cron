@@ -10,8 +10,9 @@ import "FlowCronUtils"
 transaction(
     cronHandlerStoragePath: StoragePath,
     wrappedData: AnyStruct?,
-    priority: UInt8,
-    executionEffort: UInt64
+    executorPriority: UInt8,
+    executorExecutionEffort: UInt64,
+    keeperExecutionEffort: UInt64
 ) {
     let manager: auth(FlowTransactionSchedulerUtils.Owner) &{FlowTransactionSchedulerUtils.Manager}
     let executorTime: UInt64
@@ -44,26 +45,28 @@ transaction(
         let currentTime = UInt64(getCurrentBlock().timestamp)
         self.executorTime = FlowCronUtils.nextTick(spec: cronSpec, afterUnix: currentTime)
             ?? panic("Cannot find next execution time for cron expression")
-        self.keeperTime = self.executorTime + FlowCron.KEEPER_OFFSET_SECONDS
+        self.keeperTime = self.executorTime + FlowCron.keeperOffset
 
         // Issue capability for cron handler (needed for scheduling)
         self.cronHandlerCap = signer.capabilities.storage.issue<auth(FlowTransactionScheduler.Execute) &{FlowTransactionScheduler.TransactionHandler}>(
             cronHandlerStoragePath
         )
 
-        // Create EXECUTOR context (user's priority and effort)
+        // Create EXECUTOR context
         self.executorContext = FlowCron.CronContext(
             executionMode: FlowCron.ExecutionMode.Executor,
-            priority: FlowTransactionScheduler.Priority(rawValue: priority)!,
-            executionEffort: executionEffort,
+            executorPriority: FlowTransactionScheduler.Priority(rawValue: executorPriority)!,
+            executorExecutionEffort: executorExecutionEffort,
+            keeperExecutionEffort: keeperExecutionEffort,
             wrappedData: wrappedData
         )
 
-        // Create KEEPER context (fixed priority and effort)
+        // Create KEEPER context
         self.keeperContext = FlowCron.CronContext(
             executionMode: FlowCron.ExecutionMode.Keeper,
-            priority: FlowCron.KEEPER_PRIORITY,
-            executionEffort: FlowCron.KEEPER_EXECUTION_EFFORT,
+            executorPriority: FlowTransactionScheduler.Priority(rawValue: executorPriority)!,
+            executorExecutionEffort: executorExecutionEffort,
+            keeperExecutionEffort: keeperExecutionEffort,
             wrappedData: wrappedData
         )
 
@@ -71,8 +74,8 @@ transaction(
         let executorEstimate = FlowTransactionScheduler.estimate(
             data: self.executorContext,
             timestamp: UFix64(self.executorTime),
-            priority: FlowTransactionScheduler.Priority(rawValue: priority)!,
-            executionEffort: executionEffort
+            priority: FlowTransactionScheduler.Priority(rawValue: executorPriority)!,
+            executionEffort: executorExecutionEffort
         )
 
         let executorFee = executorEstimate.flowFee ?? panic("Cannot estimate executor fee")
@@ -81,8 +84,8 @@ transaction(
         let keeperEstimate = FlowTransactionScheduler.estimate(
             data: self.keeperContext,
             timestamp: UFix64(self.keeperTime),
-            priority: FlowCron.KEEPER_PRIORITY,
-            executionEffort: FlowCron.KEEPER_EXECUTION_EFFORT
+            priority: FlowCron.keeperPriority,
+            executionEffort: keeperExecutionEffort
         )
 
         let keeperFee = keeperEstimate.flowFee ?? panic("Cannot estimate keeper fee")
@@ -109,8 +112,8 @@ transaction(
             handlerCap: self.cronHandlerCap,
             data: self.executorContext,
             timestamp: UFix64(self.executorTime),
-            priority: FlowTransactionScheduler.Priority(rawValue: priority)!,
-            executionEffort: executionEffort,
+            priority: FlowTransactionScheduler.Priority(rawValue: executorPriority)!,
+            executionEffort: executorExecutionEffort,
             fees: <-self.executorFees
         )
 
@@ -119,8 +122,8 @@ transaction(
             handlerCap: self.cronHandlerCap,
             data: self.keeperContext,
             timestamp: UFix64(self.keeperTime),
-            priority: FlowCron.KEEPER_PRIORITY,
-            executionEffort: FlowCron.KEEPER_EXECUTION_EFFORT,
+            priority: FlowCron.keeperPriority,
+            executionEffort: keeperExecutionEffort,
             fees: <-self.keeperFees
         )
     }

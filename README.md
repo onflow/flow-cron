@@ -11,7 +11,6 @@ FlowCron leverages Flow's native transaction scheduling capabilities (FLIP-330) 
 - **Standard Cron Syntax**: Uses familiar 5-field cron expressions (minute, hour, day-of-month, month, day-of-week)
 - **Self-Perpetuating**: Jobs automatically reschedule themselves after each execution
 - **Keeper/Executor Architecture**: Separates scheduling logic from user code for fault isolation
-- **Priority Fallback**: Automatic High→Medium priority fallback when slots are full
 - **Fault Tolerant**: Executor failures don't stop the keeper from scheduling next cycle
 - **Flexible Priority**: Supports High, Medium, and Low priority executions
 - **View Resolver Integration**: Full support for querying job states and metadata
@@ -94,8 +93,17 @@ flow transactions send cadence/transactions/ScheduleCronHandler.cdc \
     --arg Path:/storage/MyCronHandler \
     --arg 'Optional(String):null' \
     --arg UInt8:2 \
-    --arg UInt64:100
+    --arg UInt64:100 \
+    --arg UInt64:2500
 ```
+
+**Parameters:**
+
+- `cronHandlerStoragePath`: Path to your CronHandler
+- `wrappedData`: Optional data passed to your handler
+- `executorPriority`: Priority for executor (0=High, 1=Medium, 2=Low)
+- `executorExecutionEffort`: Execution effort for user code (100-9999)
+- `keeperExecutionEffort`: Execution effort for keeper scheduling (recommended: 2500)
 
 ### 4. Monitor & Control
 
@@ -168,16 +176,23 @@ access(all) enum ExecutionMode: UInt8 {
 
 #### CronContext Struct
 
-Execution context passed with each scheduled transaction:
+Execution context passed with each scheduled transaction. This allows scheduling the same CronHandler with different configurations without recreating the resource:
 
 ```cadence
 access(all) struct CronContext {
     access(contract) let executionMode: ExecutionMode
-    access(contract) let priority: FlowTransactionScheduler.Priority
-    access(contract) let executionEffort: UInt64
+    access(contract) let executorPriority: FlowTransactionScheduler.Priority
+    access(contract) let executorExecutionEffort: UInt64
+    access(contract) let keeperExecutionEffort: UInt64
     access(contract) let wrappedData: AnyStruct?
 }
 ```
+
+- `executionMode`: Whether this is a Keeper or Executor transaction
+- `executorPriority`: Priority for executor transactions (High, Medium, Low)
+- `executorExecutionEffort`: Computational effort for user code execution
+- `keeperExecutionEffort`: Computational effort for keeper scheduling operations
+- `wrappedData`: Optional data passed to your handler
 
 #### CronInfo View
 
@@ -221,7 +236,7 @@ Time ─────────────────────────
 
 - **Fault Isolation**: If executor panics (user code error), keeper still runs and schedules next cycle
 - **No Silent Death**: Keeper uses force-unwrap - if scheduling fails, it panics loudly (better than silent stop)
-- **Priority Fallback**: Executor tries High priority first, falls back to Medium if slot is full
+- **Strict Priority**: Executor uses exactly the priority you specify - if High priority slot is full, that tick is skipped (use Medium for guaranteed scheduling)
 
 #### 2. Bootstrap Process
 
@@ -283,10 +298,9 @@ FlowCron emits detailed events for monitoring:
 |-------|--------------|
 | `CronKeeperExecuted` | Keeper successfully scheduled next cycle |
 | `CronExecutorExecuted` | Executor successfully ran user code |
-| `CronExecutorFallback` | Executor fell back from High to Medium priority |
 | `CronScheduleRejected` | Duplicate/unauthorized keeper was blocked |
 | `CronScheduleFailed` | Scheduling failed (insufficient funds) |
-| `CronEstimationFailed` | Fee estimation failed |
+| `CronEstimationFailed` | Fee estimation failed (e.g., High priority slot full) |
 
 ## Cron Expression Engine
 

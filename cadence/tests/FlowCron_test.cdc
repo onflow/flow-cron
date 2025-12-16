@@ -145,7 +145,8 @@ access(all) fun test_InitialScheduleCreatesTwoTransactions() {
                 /storage/TestCronHandler as StoragePath,
                 nil as AnyStruct?,
                 1 as UInt8,
-                1000 as UInt64
+                1000 as UInt64,
+                2500 as UInt64
             ]
         )
     )
@@ -193,7 +194,8 @@ access(all) fun test_FirstExecutionIncrementsCounter() {
                 /storage/TestCronHandler as StoragePath,
                 nil as AnyStruct?,
                 1 as UInt8,
-                1000 as UInt64
+                1000 as UInt64,
+                2500 as UInt64
             ]
         )
     )
@@ -248,7 +250,8 @@ access(all) fun test_KeeperSchedulesNextCycle() {
                 /storage/TestCronHandler as StoragePath,
                 nil as AnyStruct?,
                 1 as UInt8,
-                1000 as UInt64
+                1000 as UInt64,
+                2500 as UInt64
             ]
         )
     )
@@ -305,7 +308,8 @@ access(all) fun test_ExecutorEmitsEvent() {
                 /storage/TestCronHandler as StoragePath,
                 nil as AnyStruct?,
                 1 as UInt8,
-                1000 as UInt64
+                1000 as UInt64,
+                2500 as UInt64
             ]
         )
     )
@@ -352,7 +356,8 @@ access(all) fun test_KeeperEventContainsNextIds() {
                 /storage/TestCronHandler as StoragePath,
                 nil as AnyStruct?,
                 1 as UInt8,
-                1000 as UInt64
+                1000 as UInt64,
+                2500 as UInt64
             ]
         )
     )
@@ -408,7 +413,8 @@ access(all) fun test_KeeperOffsetOneSecond() {
                 /storage/TestCronHandler as StoragePath,
                 nil as AnyStruct?,
                 1 as UInt8,
-                1000 as UInt64
+                1000 as UInt64,
+                2500 as UInt64
             ]
         )
     )
@@ -450,7 +456,8 @@ access(all) fun test_FiveMinuteCronTiming() {
                 /storage/TestCronHandler as StoragePath,
                 nil as AnyStruct?,
                 1 as UInt8,
-                1000 as UInt64
+                1000 as UInt64,
+                2500 as UInt64
             ]
         )
     )
@@ -501,7 +508,8 @@ access(all) fun test_SpecificMinuteEachHour() {
                 /storage/TestCronHandler as StoragePath,
                 nil as AnyStruct?,
                 1 as UInt8,
-                1000 as UInt64
+                1000 as UInt64,
+                2500 as UInt64
             ]
         )
     )
@@ -546,7 +554,8 @@ access(all) fun test_ScheduleStatusReturnsIDs() {
                 /storage/TestCronHandler as StoragePath,
                 nil as AnyStruct?,
                 1 as UInt8,
-                1000 as UInt64
+                1000 as UInt64,
+                2500 as UInt64
             ]
         )
     )
@@ -606,7 +615,8 @@ access(all) fun test_CancellationCancelsBothTransactions() {
                 /storage/TestCronHandler as StoragePath,
                 nil as AnyStruct?,
                 1 as UInt8,
-                1000 as UInt64
+                1000 as UInt64,
+                2500 as UInt64
             ]
         )
     )
@@ -665,7 +675,8 @@ access(all) fun test_CancellationAndRescheduling() {
                 /storage/TestCronHandler as StoragePath,
                 nil as AnyStruct?,
                 1 as UInt8,
-                1000 as UInt64
+                1000 as UInt64,
+                2500 as UInt64
             ]
         )
     )
@@ -702,7 +713,8 @@ access(all) fun test_CancellationAndRescheduling() {
                 /storage/TestCronHandler as StoragePath,
                 "new data" as AnyStruct?,
                 1 as UInt8,
-                1000 as UInt64
+                1000 as UInt64,
+                2500 as UInt64
             ]
         )
     )
@@ -745,7 +757,8 @@ access(all) fun test_DuplicateKeeperRejected() {
                 /storage/TestCronHandler as StoragePath,
                 "initial data" as AnyStruct?,
                 1 as UInt8,
-                1000 as UInt64
+                1000 as UInt64,
+                2500 as UInt64
             ]
         )
     )
@@ -763,7 +776,8 @@ access(all) fun test_DuplicateKeeperRejected() {
                 /storage/TestCronHandler as StoragePath,
                 "different data" as AnyStruct?,
                 2 as UInt8,
-                2000 as UInt64
+                2000 as UInt64,
+                2500 as UInt64
             ]
         )
     )
@@ -824,7 +838,8 @@ access(all) fun test_CronInfoView() {
                 /storage/TestCronHandler as StoragePath,
                 nil as AnyStruct?,
                 1 as UInt8,
-                1000 as UInt64
+                1000 as UInt64,
+                2500 as UInt64
             ]
         )
     )
@@ -880,7 +895,8 @@ access(all) fun test_ContinuousExecution() {
                 /storage/TestCronHandler as StoragePath,
                 nil as AnyStruct?,
                 1 as UInt8,
-                1000 as UInt64
+                1000 as UInt64,
+                2500 as UInt64
             ]
         )
     )
@@ -956,7 +972,8 @@ access(all) fun test_ExecutedTransactionsChangeStatus() {
                 /storage/TestCronHandler as StoragePath,
                 nil as AnyStruct?,
                 1 as UInt8,
-                1000 as UInt64
+                1000 as UInt64,
+                2500 as UInt64
             ]
         )
     )
@@ -1270,7 +1287,8 @@ access(all) fun test_GetterFunctionsReturnCorrectValues() {
                 /storage/TestCronHandler as StoragePath,
                 nil as AnyStruct?,
                 1 as UInt8,
-                1000 as UInt64
+                1000 as UInt64,
+                2500 as UInt64
             ]
         )
     )

@@ -421,10 +421,9 @@ Search for your account address and look for these events:
 
 - `CronKeeperExecuted` - Keeper successfully scheduled next cycle
 - `CronExecutorExecuted` - Executor successfully ran user code
-- `CronExecutorFallback` - Executor fell back from High to Medium priority
 - `CronScheduleRejected` - Duplicate/unauthorized keeper was blocked
 - `CronScheduleFailed` - If insufficient funds
-- `CronEstimationFailed` - If fee estimation fails
+- `CronEstimationFailed` - If fee estimation fails (e.g., High priority slot full)
 
 Events include details like:
 
