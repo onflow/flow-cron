@@ -75,7 +75,8 @@
       "source": "mainnet://e467b9dd11fa00df.FlowTransactionSchedulerUtils",
       "hash": "b5d6f06dd43e4cee907e08a5bc46df0bb9c2338d806d9d253789aee4c4ac01ad",
       "aliases": {
-        "mainnet": "e467b9dd11fa00df"
+        "mainnet": "e467b9dd11fa00df",
+        "testnet": "8c5303eaa26202d6"
       }
     },
     "FungibleToken": {
