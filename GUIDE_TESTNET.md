@@ -154,6 +154,7 @@ flow transactions send cadence/transactions/ScheduleCronHandler.cdc \
   nil \
   2 \
   500 \
+  2500 \
   --network=testnet \
   --signer=testnet-account
 ```
@@ -163,7 +164,8 @@ flow transactions send cadence/transactions/ScheduleCronHandler.cdc \
 - `/storage/CounterCronHandler` - Where the CronHandler is stored
 - `nil` - No wrapped data needed for Counter
 - `2` - Priority: Low (0=High, 1=Medium, 2=Low)
-- `500` - Execution effort (confirmed working value)
+- `500` - Executor execution effort
+- `2500` - Keeper execution effort (keeper does more work scheduling next cycle)
 
 **Expected output:**
 
@@ -381,6 +383,7 @@ flow transactions send cadence/transactions/ScheduleCronHandler.cdc \
   nil \
   2 \
   500 \
+  2500 \
   --network=testnet \
   --signer=testnet-account
 ```

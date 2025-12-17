@@ -16,6 +16,13 @@ FlowCron leverages Flow's native transaction scheduling capabilities (FLIP-330) 
 - **View Resolver Integration**: Full support for querying job states and metadata
 - **Distributed Design**: Each user controls their own CronHandler resources
 
+## Contract Addresses
+
+| Contract | Testnet | Mainnet |
+|----------|---------|---------|
+| FlowCron | `0x5cbfdec870ee216d` | TBD |
+| FlowCronUtils | `0x5cbfdec870ee216d` | TBD |
+
 ## Quick Start
 
 ### 1. Create a Transaction Handler
