@@ -1,13 +1,13 @@
 {
   "contracts": {
-    "FlowCron": {
-      "source": "cadence/contracts/FlowCron.cdc",
+    "FlowCronUtils": {
+      "source": "cadence/contracts/FlowCronUtils.cdc",
       "aliases": {
         "testing": "0000000000000007"
       }
     },
-    "FlowCronUtils": {
-      "source": "cadence/contracts/FlowCronUtils.cdc",
+    "FlowCron": {
+      "source": "cadence/contracts/FlowCron.cdc",
       "aliases": {
         "testing": "0000000000000007"
       }
@@ -140,40 +140,29 @@
       }
     },
     "testnet-account": {
-      "address": "2d7a015aeaac2429",
+      "address": "5cbfdec870ee216d",
       "key": {
         "type": "file",
         "location": "testnet-account.pkey"
-      }
-    },
-    "kms-testnet-account": {
-      "address": "cd25614d123fc872",
-      "key": {
-        "type": "google-kms",
-        "index": 0,
-        "signatureAlgorithm": "ECDSA_P256",
-        "hashAlgorithm": "SHA2_256",
-        "resourceID": "projects/flow-foundation-admin/locations/global/keyRings/flow-developer-tooling-contracts-testnet/cryptoKeys/flow-developer-tooling-cron-contract-testnet/cryptoKeyVersions/1"
       }
     }
   },
   "deployments": {
     "emulator": {
       "emulator-account": [
-        "FlowCron",
         "FlowCronUtils",
+        "FlowCron",
         "Counter",
         "CounterTransactionHandler"
       ]
     },
     "testnet": {
       "testnet-account": [
-        "FlowCron",
         "FlowCronUtils",
+        "FlowCron",
         "Counter",
         "CounterTransactionHandler"
-      ],
-      "kms-testnet-account": ["FlowCronUtils", "FlowCron"]
+      ]
     }
   }
 }
