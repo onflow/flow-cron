@@ -871,7 +871,7 @@ access(all) fun test_ContinuousExecution() {
     // Verify counter starts at 0 (reset by beforeEach)
     Test.assertEqual(0, getCounterValue())
 
-    // Create cron handler
+    // Create cron handler with every-minute execution
     let createResult = Test.executeTransaction(
         Test.Transaction(
             code: Test.readFile("../transactions/CreateCronHandler.cdc"),
@@ -902,44 +902,33 @@ access(all) fun test_ContinuousExecution() {
     )
     Test.expect(scheduleResult, Test.beSucceeded())
 
+    // Get initial keeper timestamp
+    let initialEvents = Test.eventsOfType(Type<FlowTransactionScheduler.Scheduled>())
+    let firstKeeperEvent = initialEvents[initialEvents.length - 1] as! FlowTransactionScheduler.Scheduled
+    let firstKeeperTime = firstKeeperEvent.timestamp
+
+    // Capture baseline AFTER scheduling but BEFORE any time advancement
+    // This ensures we don't count events from previous tests
     let executorEventsBefore = Test.eventsOfType(Type<FlowCron.CronExecutorExecuted>())
+    let counterBefore = getCounterValue()
 
-    // Execute 3 complete cycles
-    // Each cycle needs to trigger both executor (runs user code) and keeper (schedules next)
-    // Keeper is scheduled 1 second after executor, so we advance past keeper time each cycle
-    var cycle = 0
-    while cycle < 3 {
-        cycle = cycle + 1
+    // Advance to trigger first cycle (executor + keeper)
+    let startTime = getTimestamp()
+    Test.moveTime(by: Fix64((firstKeeperTime - startTime) + 1.0))
 
-        // Get current timestamp and find the latest scheduled event (keeper is always last)
-        let currentTimestamp = getTimestamp()
-        let allEvents = Test.eventsOfType(Type<FlowTransactionScheduler.Scheduled>())
+    // Advance 1 minute + 2 seconds to trigger second cycle
+    Test.moveTime(by: 62.0)
 
-        // Find the latest scheduled event timestamp (should be the keeper)
-        var latestTimestamp: UFix64 = 0.0
-        var i = 0
-        while i < allEvents.length {
-            let evt = allEvents[i] as! FlowTransactionScheduler.Scheduled
-            if evt.timestamp > latestTimestamp {
-                latestTimestamp = evt.timestamp
-            }
-            i = i + 1
-        }
+    // Advance 1 minute + 2 seconds to trigger third cycle
+    Test.moveTime(by: 62.0)
 
-        // Advance time past the keeper event to trigger both executor and keeper
-        if latestTimestamp > currentTimestamp {
-            let timeToAdvance = (latestTimestamp - currentTimestamp) + 1.0
-            Test.moveTime(by: Fix64(timeToAdvance))
-        }
-    }
-
-    // Verify we had 3 executor executions
+    // Verify we had exactly 3 executor executions since our baseline
     let executorEventsAfter = Test.eventsOfType(Type<FlowCron.CronExecutorExecuted>())
     let newExecutorEvents = executorEventsAfter.length - executorEventsBefore.length
     Test.assertEqual(3, newExecutorEvents)
 
-    // Counter should be 3
-    Test.assertEqual(3, getCounterValue())
+    // Counter should have incremented by 3
+    Test.assertEqual(counterBefore + 3, getCounterValue())
 }
 
 /// Test executed transactions change status
