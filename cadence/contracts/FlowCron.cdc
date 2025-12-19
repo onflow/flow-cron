@@ -32,7 +32,7 @@ import "MetadataViews"
 access(all) contract FlowCron {
 
     /// Fixed priority for keeper operations
-    /// Medium priority ensures reliable scheduling without slot filling issues
+    /// Low priority aligns with cron semantics (best-effort timing, not precise)
     access(all) let keeperPriority: FlowTransactionScheduler.Priority
     /// Offset in seconds for keeper scheduling relative to executor
     /// Essential for being scheduled after executor to prevent collision at T+1
@@ -495,8 +495,8 @@ access(all) contract FlowCron {
     }
 
     init() {
-        // Set fixed medium priority for keeper operations to balance reliability with cost efficiency
-        self.keeperPriority = FlowTransactionScheduler.Priority.Medium
+        // Set fixed low priority for keeper operations as cron semantics don't require precise timing
+        self.keeperPriority = FlowTransactionScheduler.Priority.Low
         // Keeper offset of 1 second to prevent race condition
         self.keeperOffset = 1
     }
