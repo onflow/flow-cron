@@ -495,8 +495,8 @@ access(all) contract FlowCron {
     }
 
     init() {
-        // Set fixed medium priority for keeper operations to balance reliability with cost efficiency
-        self.keeperPriority = FlowTransactionScheduler.Priority.Medium
+        // Set fixed low priority for keeper operations as cron semantics don't require precise timing
+        self.keeperPriority = FlowTransactionScheduler.Priority.Low
         // Keeper offset of 1 second to prevent race condition
         self.keeperOffset = 1
     }

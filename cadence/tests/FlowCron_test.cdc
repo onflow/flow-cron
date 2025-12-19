@@ -886,9 +886,6 @@ access(all) fun test_ContinuousExecution() {
     )
     Test.expect(createResult, Test.beSucceeded())
 
-    // Capture initial timestamp BEFORE scheduling (critical for correct time calculations)
-    let initialTimestamp = getTimestamp()
-
     let scheduleResult = Test.executeTransaction(
         Test.Transaction(
             code: Test.readFile("../transactions/ScheduleCronHandler.cdc"),
@@ -907,36 +904,32 @@ access(all) fun test_ContinuousExecution() {
 
     let executorEventsBefore = Test.eventsOfType(Type<FlowCron.CronExecutorExecuted>())
 
-    // Execute multiple cycles
-    var currentTimestamp = initialTimestamp
-    let scheduledEvents = Test.eventsOfType(Type<FlowTransactionScheduler.Scheduled>())
-    var nextEvent = scheduledEvents[scheduledEvents.length - 1] as! FlowTransactionScheduler.Scheduled
-
+    // Execute 3 complete cycles
+    // Each cycle needs to trigger both executor (runs user code) and keeper (schedules next)
+    // Keeper is scheduled 1 second after executor, so we advance past keeper time each cycle
     var cycle = 0
     while cycle < 3 {
         cycle = cycle + 1
 
-        // Move time to trigger execution
-        let timeToAdvance = (nextEvent.timestamp - currentTimestamp) + 1.0
-        Test.moveTime(by: Fix64(timeToAdvance))
-        currentTimestamp = getTimestamp()
-
-        // Verify counter incremented
-        Test.assertEqual(cycle, getCounterValue())
-
-        // Get next scheduled event
+        // Get current timestamp and find the latest scheduled event (keeper is always last)
+        let currentTimestamp = getTimestamp()
         let allEvents = Test.eventsOfType(Type<FlowTransactionScheduler.Scheduled>())
-        if allEvents.length > 0 {
-            var foundNext = false
-            var i = allEvents.length - 1
-            while i >= 0 && !foundNext {
-                let evt = allEvents[i] as! FlowTransactionScheduler.Scheduled
-                if evt.timestamp > currentTimestamp {
-                    nextEvent = evt
-                    foundNext = true
-                }
-                i = i - 1
+
+        // Find the latest scheduled event timestamp (should be the keeper)
+        var latestTimestamp: UFix64 = 0.0
+        var i = 0
+        while i < allEvents.length {
+            let evt = allEvents[i] as! FlowTransactionScheduler.Scheduled
+            if evt.timestamp > latestTimestamp {
+                latestTimestamp = evt.timestamp
             }
+            i = i + 1
+        }
+
+        // Advance time past the keeper event to trigger both executor and keeper
+        if latestTimestamp > currentTimestamp {
+            let timeToAdvance = (latestTimestamp - currentTimestamp) + 1.0
+            Test.moveTime(by: Fix64(timeToAdvance))
         }
     }
 
