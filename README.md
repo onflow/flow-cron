@@ -20,8 +20,8 @@ FlowCron leverages Flow's native transaction scheduling capabilities (FLIP-330) 
 
 | Contract | Testnet | Mainnet |
 |----------|---------|---------|
-| FlowCron | `0x5cbfdec870ee216d` | TBD |
-| FlowCronUtils | `0x5cbfdec870ee216d` | TBD |
+| FlowCron | `0x5cbfdec870ee216d` | `0x6dec6e64a13b881e` |
+| FlowCronUtils | `0x5cbfdec870ee216d` | `0x6dec6e64a13b881e` |
 
 ## Quick Start
 

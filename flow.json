@@ -145,6 +145,16 @@
         "type": "file",
         "location": "testnet-account.pkey"
       }
+    },
+    "mainnet-account": {
+      "address": "6dec6e64a13b881e",
+      "key": {
+        "type": "google-kms",
+        "index": 0,
+        "signatureAlgorithm": "ECDSA_P256",
+        "hashAlgorithm": "SHA2_256",
+        "resourceID": "projects/flow-foundation-admin/locations/global/keyRings/flow-developer-tooling-contracts-mainnet/cryptoKeys/flow-developer-tooling-cron-contract-mainnet/cryptoKeyVersions/1"
+      }
     }
   },
   "deployments": {
@@ -162,6 +172,12 @@
         "FlowCron",
         "Counter",
         "CounterTransactionHandler"
+      ]
+    },
+    "mainnet": {
+      "mainnet-account": [
+        "FlowCronUtils",
+        "FlowCron"
       ]
     }
   }
