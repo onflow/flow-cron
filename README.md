@@ -1,10 +1,10 @@
-# FlowCron - Cron Job Scheduling on Flow
+# flow-cron — Cron-like Scheduling on the Flow Network
 
 FlowCron enables autonomous, recurring transaction execution without external triggers, allowing smart contracts to "wake up" and execute logic at predefined times using cron expressions.
 
 ## Overview
 
-FlowCron leverages Flow's native transaction scheduling capabilities (FLIP-330) to implement recurring executions. Unlike traditional cron systems that require external schedulers, FlowCron operates entirely onchain, ensuring decentralization and reliability.
+FlowCron leverages Flow native transaction scheduling capabilities (FLIP-330) to implement recurring executions. Unlike traditional cron systems that require external schedulers, FlowCron operates entirely onchain, ensuring decentralization and reliability.
 
 ### Key Features
 
@@ -378,3 +378,12 @@ dowMask:   0x3E                (bits 1-5 set = Mon-Fri)
 - **Space**: ~15 bytes vs hundreds for arrays
 - **Speed**: O(1) bit check vs O(n) array scan
 - **Gas**: Bitwise operations are cheapest on EVM/Cadence
+
+## About Flow
+
+This repo is part of the [Flow network](https://flow.com), a Layer 1 blockchain built for consumer applications, AI agents, and DeFi at scale.
+
+- Developer docs: https://developers.flow.com
+- Cadence language: https://cadence-lang.org
+- Community: [Flow Discord](https://discord.gg/flow) · [Flow Forum](https://forum.flow.com)
+- Governance: [Flow Improvement Proposals](https://github.com/onflow/flips)
